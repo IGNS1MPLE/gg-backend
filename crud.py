@@ -29,6 +29,8 @@ def update_product(db: Session, product_id: int, product: schemas.ProductCreate)
 def delete_product(db: Session, product_id: int):
     db_product = get_product(db, product_id)
     if db_product:
+        db.query(models.Purchase).filter(models.Purchase.product_id == product_id).delete(synchronize_session=False)
+        db.query(models.DailyLog).filter(models.DailyLog.product_id == product_id).delete(synchronize_session=False)
         db.delete(db_product)
         db.commit()
         return True
@@ -68,6 +70,8 @@ def update_hawker(db: Session, hawker_id: int, hawker: schemas.HawkerCreate):
 def delete_hawker(db: Session, hawker_id: int):
     db_hawker = get_hawker(db, hawker_id)
     if db_hawker:
+        db.query(models.DailyLog).filter(models.DailyLog.hawker_id == hawker_id).delete(synchronize_session=False)
+        db.query(models.Collection).filter(models.Collection.hawker_id == hawker_id).delete(synchronize_session=False)
         db.delete(db_hawker)
         db.commit()
         return True
@@ -142,6 +146,17 @@ def log_returns(db: Session, log_id: int, returned: schemas.DailyLogReturn):
 def get_daily_logs(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.DailyLog).offset(skip).limit(limit).all()
 
+def delete_daily_log(db: Session, log_id: int):
+    db_log = db.query(models.DailyLog).filter(models.DailyLog.id == log_id).first()
+    if db_log:
+        update_product_stock(db, db_log.product_id, db_log.sold_qty)
+        if db_log.outstanding_amount != 0:
+            update_hawker_balance(db, db_log.hawker_id, db_log.outstanding_amount)
+        db.delete(db_log)
+        db.commit()
+        return True
+    return False
+
 # --- Purchases ---
 def create_purchase(db: Session, purchase: schemas.PurchaseCreate):
     db_purchase = models.Purchase(**purchase.model_dump())
@@ -182,6 +197,32 @@ def create_collection(db: Session, collection: schemas.CollectionCreate):
 
 def get_collections(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.Collection).offset(skip).limit(limit).all()
+
+def delete_purchase(db: Session, purchase_id: int):
+    db_purchase = db.query(models.Purchase).filter(models.Purchase.id == purchase_id).first()
+    if db_purchase:
+        update_product_stock(db, db_purchase.product_id, -db_purchase.quantity)
+        db.delete(db_purchase)
+        db.commit()
+        return True
+    return False
+
+def delete_expense(db: Session, expense_id: int):
+    db_expense = db.query(models.Expense).filter(models.Expense.id == expense_id).first()
+    if db_expense:
+        db.delete(db_expense)
+        db.commit()
+        return True
+    return False
+
+def delete_collection(db: Session, collection_id: int):
+    db_collection = db.query(models.Collection).filter(models.Collection.id == collection_id).first()
+    if db_collection:
+        update_hawker_balance(db, db_collection.hawker_id, -db_collection.amount)
+        db.delete(db_collection)
+        db.commit()
+        return True
+    return False
 
 # --- Analytics Methods ---
 def get_top_products(db: Session, target_month: int, target_year: int, metric: str = 'revenue', limit: int = 10):

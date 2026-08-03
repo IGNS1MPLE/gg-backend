@@ -80,6 +80,13 @@ def log_returns(log_id: int, returned: schemas.DailyLogReturn, db: Session = Dep
         raise HTTPException(status_code=404, detail="Log not found")
     return db_log
 
+@app.delete("/logs/{log_id}")
+def delete_daily_log(log_id: int, db: Session = Depends(get_db)):
+    success = crud.delete_daily_log(db, log_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Log not found")
+    return {"ok": True}
+
 # --- Purchases ---
 @app.post("/purchases/", response_model=schemas.Purchase)
 def create_purchase(purchase: schemas.PurchaseCreate, db: Session = Depends(get_db)):
@@ -88,6 +95,13 @@ def create_purchase(purchase: schemas.PurchaseCreate, db: Session = Depends(get_
 @app.get("/purchases/", response_model=List[schemas.Purchase])
 def read_purchases(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     return crud.get_purchases(db, skip=skip, limit=limit)
+
+@app.delete("/purchases/{purchase_id}")
+def delete_purchase(purchase_id: int, db: Session = Depends(get_db)):
+    success = crud.delete_purchase(db, purchase_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Purchase not found")
+    return {"ok": True}
 
 # --- Expenses ---
 @app.post("/expenses/", response_model=schemas.Expense)
@@ -98,6 +112,13 @@ def create_expense(expense: schemas.ExpenseCreate, db: Session = Depends(get_db)
 def read_expenses(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     return crud.get_expenses(db, skip=skip, limit=limit)
 
+@app.delete("/expenses/{expense_id}")
+def delete_expense(expense_id: int, db: Session = Depends(get_db)):
+    success = crud.delete_expense(db, expense_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    return {"ok": True}
+
 # --- Collections ---
 @app.post("/collections/", response_model=schemas.Collection)
 def create_collection(collection: schemas.CollectionCreate, db: Session = Depends(get_db)):
@@ -106,6 +127,13 @@ def create_collection(collection: schemas.CollectionCreate, db: Session = Depend
 @app.get("/collections/", response_model=List[schemas.Collection])
 def read_collections(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     return crud.get_collections(db, skip=skip, limit=limit)
+
+@app.delete("/collections/{collection_id}")
+def delete_collection(collection_id: int, db: Session = Depends(get_db)):
+    success = crud.delete_collection(db, collection_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    return {"ok": True}
 
 # --- Analytics ---
 @app.get("/analytics/top-products")
