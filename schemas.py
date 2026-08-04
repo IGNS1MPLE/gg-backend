@@ -27,6 +27,7 @@ class Product(ProductBase):
 class HawkerBase(BaseModel):
     name: str
     contact_info: Optional[str] = None
+    route: Optional[str] = ""
     status: Optional[bool] = True
     balance: Optional[float] = 0.0
 
@@ -45,23 +46,46 @@ class DailyLogBase(BaseModel):
     hawker_id: int
     product_id: int
     dispatched_qty: int
+    route: Optional[str] = ""
 
 class DailyLogCreate(DailyLogBase):
     pass
 
 class DailyLogReturn(BaseModel):
     returned_qty: int
+    damaged_qty: Optional[int] = 0
+    remarks: Optional[str] = ""
     cash_collected: float
 
 class DailyLog(DailyLogBase):
     id: int
     returned_qty: int
+    damaged_qty: Optional[int] = 0
+    remarks: Optional[str] = ""
     sold_qty: int
     gross_revenue: float
     hawker_payout: float
     net_profit: float
     cash_collected: float
     outstanding_amount: float
+
+    class Config:
+        from_attributes = True
+
+# --- Supplier Schemas ---
+class SupplierBase(BaseModel):
+    name: str
+    contact_person: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    notes: Optional[str] = None
+
+class SupplierCreate(SupplierBase):
+    pass
+
+class Supplier(SupplierBase):
+    id: int
 
     class Config:
         from_attributes = True
@@ -73,6 +97,8 @@ class PurchaseBase(BaseModel):
     quantity: int
     total_cost: float
     supplier: Optional[str] = None
+    supplier_id: Optional[int] = None
+    expiry_date: Optional[date] = None
     notes: Optional[str] = None
 
 class PurchaseCreate(PurchaseBase):
@@ -111,6 +137,56 @@ class CollectionCreate(CollectionBase):
     pass
 
 class Collection(CollectionBase):
+    id: int
+
+    class Config:
+        from_attributes = True
+
+# --- Product Request Schemas ---
+class ProductRequestBase(BaseModel):
+    requested_date: Optional[date] = None
+    hawker_id: Optional[int] = None
+    product_name: str
+    category: Optional[str] = "General"
+    status: Optional[str] = "Pending"
+    notes: Optional[str] = None
+
+class ProductRequestCreate(ProductRequestBase):
+    pass
+
+class ProductRequest(ProductRequestBase):
+    id: int
+
+    class Config:
+        from_attributes = True
+
+# --- Category Schemas ---
+class CategoryBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    color_code: Optional[str] = "#3b82f6"
+
+class CategoryCreate(CategoryBase):
+    pass
+
+class Category(CategoryBase):
+    id: int
+
+    class Config:
+        from_attributes = True
+
+# --- UserAccount Schemas ---
+class UserAccountBase(BaseModel):
+    name: str
+    email: str
+    role: Optional[str] = "Store Manager"
+    status: Optional[bool] = True
+    notes: Optional[str] = None
+
+class UserAccountCreate(UserAccountBase):
+    pass
+
+class UserAccount(UserAccountBase):
     id: int
 
     class Config:

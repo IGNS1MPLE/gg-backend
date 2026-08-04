@@ -25,6 +25,7 @@ class Hawker(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
     contact_info = Column(String, nullable=True)
+    route = Column(String, nullable=True, default="")
     status = Column(Boolean, default=True) # Active or Inactive
     balance = Column(Float, default=0.0) # Outstanding balance (negative means they owe us, positive means we owe them or they have credit)
 
@@ -35,9 +36,12 @@ class DailyLog(Base):
     date = Column(Date, index=True, default=datetime.date.today)
     hawker_id = Column(Integer, ForeignKey("hawkers.id"))
     product_id = Column(Integer, ForeignKey("products.id"))
+    route = Column(String, nullable=True, default="")
     
     dispatched_qty = Column(Integer, default=0)
     returned_qty = Column(Integer, default=0)
+    damaged_qty = Column(Integer, default=0)
+    remarks = Column(String, nullable=True, default="")
     
     sold_qty = Column(Integer, default=0)
     gross_revenue = Column(Float, default=0.0)
@@ -50,6 +54,17 @@ class DailyLog(Base):
     hawker = relationship("Hawker")
     product = relationship("Product")
 
+class Supplier(Base):
+    __tablename__ = "suppliers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True)
+    contact_person = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    email = Column(String, nullable=True)
+    address = Column(String, nullable=True)
+    notes = Column(String, nullable=True)
+
 class Purchase(Base):
     __tablename__ = "purchases"
     
@@ -59,9 +74,12 @@ class Purchase(Base):
     quantity = Column(Integer, default=0)
     total_cost = Column(Float, default=0.0)
     supplier = Column(String, nullable=True)
+    supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=True)
+    expiry_date = Column(Date, nullable=True)
     notes = Column(String, nullable=True)
     
     product = relationship("Product")
+    supplier_rel = relationship("Supplier")
 
 class Expense(Base):
     __tablename__ = "expenses"
@@ -82,3 +100,34 @@ class Collection(Base):
     payment_method = Column(String, default="Cash")
     
     hawker = relationship("Hawker")
+
+class ProductRequest(Base):
+    __tablename__ = "product_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    requested_date = Column(Date, default=datetime.date.today)
+    hawker_id = Column(Integer, ForeignKey("hawkers.id"), nullable=True)
+    product_name = Column(String, index=True)
+    category = Column(String, default="General")
+    status = Column(String, default="Pending") # Pending, Approved, Rejected
+    notes = Column(String, nullable=True)
+
+    hawker = relationship("Hawker")
+
+class Category(Base):
+    __tablename__ = "categories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True, unique=True)
+    description = Column(String, nullable=True)
+    color_code = Column(String, default="#3b82f6")
+
+class UserAccount(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True)
+    email = Column(String, index=True, unique=True)
+    role = Column(String, default="Store Manager") # Admin, Store Manager, Dispatcher, Accountant
+    status = Column(Boolean, default=True)
+    notes = Column(String, nullable=True)

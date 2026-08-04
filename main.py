@@ -6,7 +6,25 @@ from typing import List
 import models, schemas, crud
 from database import engine, get_db
 
+from sqlalchemy import text
+
 models.Base.metadata.create_all(bind=engine)
+
+# Auto-migrate SQLite schema for route, damaged_qty, remarks, supplier_id, and expiry_date columns
+with engine.connect() as conn:
+    for stmt in [
+        "ALTER TABLE hawkers ADD COLUMN route VARCHAR DEFAULT ''",
+        "ALTER TABLE daily_logs ADD COLUMN route VARCHAR DEFAULT ''",
+        "ALTER TABLE daily_logs ADD COLUMN damaged_qty INTEGER DEFAULT 0",
+        "ALTER TABLE daily_logs ADD COLUMN remarks VARCHAR DEFAULT ''",
+        "ALTER TABLE purchases ADD COLUMN supplier_id INTEGER",
+        "ALTER TABLE purchases ADD COLUMN expiry_date DATE"
+    ]:
+        try:
+            conn.execute(text(stmt))
+            conn.commit()
+        except Exception:
+            pass
 
 app = FastAPI(title="Consignment & Hawker Management API")
 
@@ -87,6 +105,29 @@ def delete_daily_log(log_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Log not found")
     return {"ok": True}
 
+# --- Suppliers ---
+@app.post("/suppliers/", response_model=schemas.Supplier)
+def create_supplier(supplier: schemas.SupplierCreate, db: Session = Depends(get_db)):
+    return crud.create_supplier(db=db, supplier=supplier)
+
+@app.get("/suppliers/", response_model=List[schemas.Supplier])
+def read_suppliers(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    return crud.get_suppliers(db, skip=skip, limit=limit)
+
+@app.put("/suppliers/{supplier_id}", response_model=schemas.Supplier)
+def update_supplier(supplier_id: int, supplier: schemas.SupplierCreate, db: Session = Depends(get_db)):
+    updated_supplier = crud.update_supplier(db, supplier_id, supplier)
+    if not updated_supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    return updated_supplier
+
+@app.delete("/suppliers/{supplier_id}")
+def delete_supplier(supplier_id: int, db: Session = Depends(get_db)):
+    success = crud.delete_supplier(db, supplier_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    return {"ok": True}
+
 # --- Purchases ---
 @app.post("/purchases/", response_model=schemas.Purchase)
 def create_purchase(purchase: schemas.PurchaseCreate, db: Session = Depends(get_db)):
@@ -151,3 +192,62 @@ def get_dashboard_kpis(db: Session = Depends(get_db)):
 @app.get("/analytics/sales-trend")
 def get_sales_trend(db: Session = Depends(get_db)):
     return crud.get_weekly_sales_trend(db)
+
+# --- Notification System & Product Requests ---
+@app.get("/notifications/")
+def get_notifications(db: Session = Depends(get_db)):
+    return crud.get_notifications(db)
+
+@app.post("/product-requests/", response_model=schemas.ProductRequest)
+def create_product_request(req: schemas.ProductRequestCreate, db: Session = Depends(get_db)):
+    return crud.create_product_request(db=db, req=req)
+
+@app.get("/product-requests/", response_model=List[schemas.ProductRequest])
+def read_product_requests(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    return crud.get_product_requests(db, skip=skip, limit=limit)
+
+# --- Categories ---
+@app.post("/categories/", response_model=schemas.Category)
+def create_category(cat: schemas.CategoryCreate, db: Session = Depends(get_db)):
+    return crud.create_category(db=db, cat=cat)
+
+@app.get("/categories/", response_model=List[schemas.Category])
+def read_categories(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    return crud.get_categories(db, skip=skip, limit=limit)
+
+@app.put("/categories/{cat_id}", response_model=schemas.Category)
+def update_category(cat_id: int, cat: schemas.CategoryCreate, db: Session = Depends(get_db)):
+    updated_cat = crud.update_category(db, cat_id, cat)
+    if not updated_cat:
+        raise HTTPException(status_code=404, detail="Category not found")
+    return updated_cat
+
+@app.delete("/categories/{cat_id}")
+def delete_category(cat_id: int, db: Session = Depends(get_db)):
+    success = crud.delete_category(db, cat_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Category not found")
+    return {"ok": True}
+
+# --- Users & Roles ---
+@app.post("/users/", response_model=schemas.UserAccount)
+def create_user(user: schemas.UserAccountCreate, db: Session = Depends(get_db)):
+    return crud.create_user(db=db, user=user)
+
+@app.get("/users/", response_model=List[schemas.UserAccount])
+def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    return crud.get_users(db, skip=skip, limit=limit)
+
+@app.put("/users/{user_id}", response_model=schemas.UserAccount)
+def update_user(user_id: int, user: schemas.UserAccountCreate, db: Session = Depends(get_db)):
+    updated_user = crud.update_user(db, user_id, user)
+    if not updated_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return updated_user
+
+@app.delete("/users/{user_id}")
+def delete_user(user_id: int, db: Session = Depends(get_db)):
+    success = crud.delete_user(db, user_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"ok": True}

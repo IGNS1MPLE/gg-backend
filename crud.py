@@ -96,11 +96,19 @@ def dispatch_product(db: Session, log: schemas.DailyLogCreate):
 
     if existing_log:
         existing_log.dispatched_qty += log.dispatched_qty
+        if log.route:
+            existing_log.route = log.route
         db_log = existing_log
     else:
         db_log = models.DailyLog(**log.model_dump())
         db.add(db_log)
         
+    # Update hawker's route assignment if route is provided
+    if log.route:
+        hawker = get_hawker(db, log.hawker_id)
+        if hawker:
+            hawker.route = log.route
+
     # Update inventory - decrease stock
     update_product_stock(db, log.product_id, -log.dispatched_qty)
         
@@ -113,12 +121,15 @@ def log_returns(db: Session, log_id: int, returned: schemas.DailyLogReturn):
     if not db_log:
         return None
         
-    # Revert previous return effects if any (not strictly needed if we assume returns are logged once)
-    # Update returned qty
+    # Update return fields
     db_log.returned_qty = returned.returned_qty
-    db_log.sold_qty = db_log.dispatched_qty - db_log.returned_qty
+    db_log.damaged_qty = returned.damaged_qty if returned.damaged_qty is not None else 0
+    db_log.remarks = returned.remarks if returned.remarks is not None else ""
     
-    # Financial calculations
+    # Calculate sold quantity (Dispatched - Returned Unsold - Damaged)
+    db_log.sold_qty = max(0, db_log.dispatched_qty - db_log.returned_qty - db_log.damaged_qty)
+    
+    # Financial calculations based on sold quantity
     product = get_product(db, db_log.product_id)
     if product:
         db_log.gross_revenue = db_log.sold_qty * product.selling_price
@@ -136,7 +147,7 @@ def log_returns(db: Session, log_id: int, returned: schemas.DailyLogReturn):
     if db_log.outstanding_amount != 0:
         update_hawker_balance(db, db_log.hawker_id, -db_log.outstanding_amount)
         
-    # Update inventory - increase stock by returned qty
+    # Update inventory - increase sellable stock ONLY by returned unsold qty (damaged items do not return to sellable inventory)
     update_product_stock(db, db_log.product_id, returned.returned_qty)
         
     db.commit()
@@ -157,13 +168,50 @@ def delete_daily_log(db: Session, log_id: int):
         return True
     return False
 
+# --- Suppliers ---
+def get_supplier(db: Session, supplier_id: int):
+    return db.query(models.Supplier).filter(models.Supplier.id == supplier_id).first()
+
+def get_suppliers(db: Session, skip: int = 0, limit: int = 100):
+    return db.query(models.Supplier).offset(skip).limit(limit).all()
+
+def create_supplier(db: Session, supplier: schemas.SupplierCreate):
+    db_supplier = models.Supplier(**supplier.model_dump())
+    db.add(db_supplier)
+    db.commit()
+    db.refresh(db_supplier)
+    return db_supplier
+
+def update_supplier(db: Session, supplier_id: int, supplier: schemas.SupplierCreate):
+    db_supplier = get_supplier(db, supplier_id)
+    if db_supplier:
+        for key, value in supplier.model_dump().items():
+            setattr(db_supplier, key, value)
+        db.commit()
+        db.refresh(db_supplier)
+    return db_supplier
+
+def delete_supplier(db: Session, supplier_id: int):
+    db_supplier = get_supplier(db, supplier_id)
+    if db_supplier:
+        db.delete(db_supplier)
+        db.commit()
+        return True
+    return False
+
 # --- Purchases ---
 def create_purchase(db: Session, purchase: schemas.PurchaseCreate):
     db_purchase = models.Purchase(**purchase.model_dump())
     db.add(db_purchase)
     
-    # Update inventory
+    # Update inventory stock
     update_product_stock(db, purchase.product_id, purchase.quantity)
+    
+    # Update product expiry_date if provided in purchase
+    if purchase.expiry_date:
+        product = get_product(db, purchase.product_id)
+        if product:
+            product.expiry_date = purchase.expiry_date
     
     db.commit()
     db.refresh(db_purchase)
@@ -286,19 +334,39 @@ def get_top_hawkers(db: Session, target_month: int, target_year: int, metric: st
 def get_dashboard_kpis(db: Session):
     today = date.today()
     
-    # Today's Sales
-    todays_sales = db.query(func.sum(models.DailyLog.gross_revenue)).filter(models.DailyLog.date == today).scalar() or 0.0
-    
-    # Active Hawkers count
+    # Row 1 KPIs
+    todays_sales = float(db.query(func.sum(models.DailyLog.gross_revenue)).filter(models.DailyLog.date == today).scalar() or 0.0)
+    profit_today = float(db.query(func.sum(models.DailyLog.net_profit)).filter(models.DailyLog.date == today).scalar() or 0.0)
     active_hawkers = db.query(models.Hawker).filter(models.Hawker.status == True).count()
-    
-    # Low Stock Items
     low_stock_items = db.query(models.Product).filter(models.Product.current_stock <= models.Product.min_stock_alert).count()
+    
+    # Row 2 KPIs
+    products_issued_today = int(db.query(func.sum(models.DailyLog.dispatched_qty)).filter(models.DailyLog.date == today).scalar() or 0)
+    returns_today = int(db.query(func.sum(models.DailyLog.returned_qty)).filter(models.DailyLog.date == today).scalar() or 0)
+    
+    hawker_debt = db.query(func.sum(models.Hawker.balance)).filter(models.Hawker.balance < 0).scalar() or 0.0
+    pending_collection = float(abs(hawker_debt))
+    
+    top_prod_query = db.query(models.Product.name).join(models.DailyLog).group_by(models.Product.id).order_by(func.sum(models.DailyLog.gross_revenue).desc()).first()
+    top_selling_product = top_prod_query[0] if top_prod_query else "None"
+    
+    # Collections & expenses supplementary
+    collections_direct = db.query(func.sum(models.Collection.amount)).filter(models.Collection.date == today).scalar() or 0.0
+    collections_returns = db.query(func.sum(models.DailyLog.cash_collected)).filter(models.DailyLog.date == today).scalar() or 0.0
+    collection_today = float(collections_direct + collections_returns)
+    expenses_today = float(db.query(func.sum(models.Expense.amount)).filter(models.Expense.date == today).scalar() or 0.0)
     
     return {
         "todays_sales": todays_sales,
+        "profit_today": profit_today,
         "active_hawkers": active_hawkers,
-        "low_stock_items": low_stock_items
+        "low_stock_items": low_stock_items,
+        "products_issued_today": products_issued_today,
+        "returns_today": returns_today,
+        "pending_collection": pending_collection,
+        "top_selling_product": top_selling_product,
+        "collection_today": collection_today,
+        "expenses_today": expenses_today
     }
 
 def get_weekly_sales_trend(db: Session):
@@ -325,4 +393,159 @@ def get_weekly_sales_trend(db: Session):
         })
         
     return trend
+
+# --- Product Requests ---
+def create_product_request(db: Session, req: schemas.ProductRequestCreate):
+    db_req = models.ProductRequest(**req.model_dump())
+    db.add(db_req)
+    db.commit()
+    db.refresh(db_req)
+    return db_req
+
+def get_product_requests(db: Session, skip: int = 0, limit: int = 100):
+    return db.query(models.ProductRequest).offset(skip).limit(limit).all()
+
+# --- Comprehensive Notification System ---
+def get_notifications(db: Session):
+    today = date.today()
+    thirty_days = today + timedelta(days=30)
+    notifications = []
+
+    # 1. 🔔 Low stock alerts
+    low_stock_prods = db.query(models.Product).filter(models.Product.current_stock <= models.Product.min_stock_alert).all()
+    for p in low_stock_prods:
+        notifications.append({
+            "id": f"low_stock_{p.id}",
+            "category": "Low Stock Alert",
+            "type": "danger",
+            "title": f"Low Stock: {p.name}",
+            "description": f"Current stock level is {p.current_stock} (Below threshold of {p.min_stock_alert}).",
+            "link": "/inventory"
+        })
+
+    # 2. 🔔 Pending collections (if returned product not updated)
+    pending_logs = db.query(models.DailyLog).filter(
+        models.DailyLog.returned_qty == 0,
+        models.DailyLog.damaged_qty == 0,
+        models.DailyLog.cash_collected == 0,
+        models.DailyLog.dispatched_qty > 0
+    ).all()
+    
+    for log in pending_logs:
+        h_name = log.hawker.name if log.hawker else f"Hawker #{log.hawker_id}"
+        p_name = log.product.name if log.product else f"Product #{log.product_id}"
+        notifications.append({
+            "id": f"pending_col_{log.id}",
+            "category": "Pending Collection",
+            "type": "warning",
+            "title": f"Pending Settlement: {h_name}",
+            "description": f"Dispatch for '{p_name}' ({log.dispatched_qty} units on {log.date}) has uncollected cash/returns.",
+            "link": "/returns"
+        })
+
+    # 3. 🔔 Product expiry
+    expiring_prods = db.query(models.Product).filter(
+        models.Product.expiry_date != None,
+        models.Product.expiry_date <= thirty_days
+    ).all()
+    
+    for p in expiring_prods:
+        is_expired = p.expiry_date <= today
+        notifications.append({
+            "id": f"expiry_{p.id}",
+            "category": "Product Expiry Alert",
+            "type": "danger" if is_expired else "warning",
+            "title": f"{'Expired' if is_expired else 'Expiring Soon'}: {p.name}",
+            "description": f"Product expiry date is {p.expiry_date}. Current stock: {p.current_stock}.",
+            "link": "/inventory"
+        })
+
+    # 4. 🔔 Hawker absence
+    active_hawkers = db.query(models.Hawker).filter(models.Hawker.status == True).all()
+    today_logged_hawker_ids = {log.hawker_id for log in db.query(models.DailyLog.hawker_id).filter(models.DailyLog.date == today).all()}
+    
+    for h in active_hawkers:
+        if h.id not in today_logged_hawker_ids:
+            notifications.append({
+                "id": f"absence_{h.id}",
+                "category": "Hawker Absence Alert",
+                "type": "info",
+                "title": f"Hawker Unassigned: {h.name}",
+                "description": f"Hawker '{h.name}' ({h.route or 'No Route'}) has no stock dispatches logged for today.",
+                "link": "/distribution"
+            })
+
+    # 5. 🔔 New product requests
+    pending_requests = db.query(models.ProductRequest).filter(models.ProductRequest.status == "Pending").all()
+    for req in pending_requests:
+        h_name = req.hawker.name if req.hawker else "Staff"
+        notifications.append({
+            "id": f"req_{req.id}",
+            "category": "New Product Request",
+            "type": "success",
+            "title": f"New Request: {req.product_name}",
+            "description": f"Requested by {h_name} in category '{req.category}'.",
+            "link": "/products"
+        })
+
+    return {
+        "count": len(notifications),
+        "notifications": notifications
+    }
+
+# --- Categories ---
+def get_categories(db: Session, skip: int = 0, limit: int = 100):
+    return db.query(models.Category).offset(skip).limit(limit).all()
+
+def create_category(db: Session, cat: schemas.CategoryCreate):
+    db_cat = models.Category(**cat.model_dump())
+    db.add(db_cat)
+    db.commit()
+    db.refresh(db_cat)
+    return db_cat
+
+def update_category(db: Session, cat_id: int, cat: schemas.CategoryCreate):
+    db_cat = db.query(models.Category).filter(models.Category.id == cat_id).first()
+    if db_cat:
+        for key, value in cat.model_dump().items():
+            setattr(db_cat, key, value)
+        db.commit()
+        db.refresh(db_cat)
+    return db_cat
+
+def delete_category(db: Session, cat_id: int):
+    db_cat = db.query(models.Category).filter(models.Category.id == cat_id).first()
+    if db_cat:
+        db.delete(db_cat)
+        db.commit()
+        return True
+    return False
+
+# --- User Accounts ---
+def get_users(db: Session, skip: int = 0, limit: int = 100):
+    return db.query(models.UserAccount).offset(skip).limit(limit).all()
+
+def create_user(db: Session, user: schemas.UserAccountCreate):
+    db_user = models.UserAccount(**user.model_dump())
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+def update_user(db: Session, user_id: int, user: schemas.UserAccountCreate):
+    db_user = db.query(models.UserAccount).filter(models.UserAccount.id == user_id).first()
+    if db_user:
+        for key, value in user.model_dump().items():
+            setattr(db_user, key, value)
+        db.commit()
+        db.refresh(db_user)
+    return db_user
+
+def delete_user(db: Session, user_id: int):
+    db_user = db.query(models.UserAccount).filter(models.UserAccount.id == user_id).first()
+    if db_user:
+        db.delete(db_user)
+        db.commit()
+        return True
+    return False
 
