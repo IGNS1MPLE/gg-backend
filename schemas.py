@@ -179,6 +179,7 @@ class Category(CategoryBase):
 class UserAccountBase(BaseModel):
     name: str
     email: str
+    password: Optional[str] = "admin123"
     role: Optional[str] = "Store Manager"
     status: Optional[bool] = True
     notes: Optional[str] = None
@@ -191,3 +192,14 @@ class UserAccount(UserAccountBase):
 
     class Config:
         from_attributes = True
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+    mode: Optional[str] = "admin" # admin or user
+
+class LoginResponse(BaseModel):
+    ok: bool
+    user: Optional[UserAccount] = None
+    role: str
+    message: str

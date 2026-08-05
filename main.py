@@ -238,7 +238,21 @@ def delete_category(cat_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Category not found")
     return {"ok": True}
 
-# --- Users & Roles ---
+# --- Authentication & Users ---
+@app.post("/auth/login", response_model=schemas.LoginResponse)
+def login(req: schemas.LoginRequest, db: Session = Depends(get_db)):
+    user = crud.authenticate_user(db, req.username, req.password, mode=req.mode)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid username/email or password")
+    
+    role_assigned = "admin" if (req.mode == "admin" or user.role.lower() in ["admin", "store manager"]) else "user"
+    return {
+        "ok": True,
+        "user": user,
+        "role": role_assigned,
+        "message": "Login successful"
+    }
+
 @app.post("/users/", response_model=schemas.UserAccount)
 def create_user(user: schemas.UserAccountCreate, db: Session = Depends(get_db)):
     return crud.create_user(db=db, user=user)

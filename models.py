@@ -128,6 +128,7 @@ class UserAccount(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
     email = Column(String, index=True, unique=True)
-    role = Column(String, default="Store Manager") # Admin, Store Manager, Dispatcher, Accountant
+    password = Column(String, default="admin123")
+    role = Column(String, default="Store Manager") # Admin, Store Manager, Dispatcher, Accountant, User
     status = Column(Boolean, default=True)
     notes = Column(String, nullable=True)

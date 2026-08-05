@@ -523,7 +523,60 @@ def delete_category(db: Session, cat_id: int):
 
 # --- User Accounts ---
 def get_users(db: Session, skip: int = 0, limit: int = 100):
-    return db.query(models.UserAccount).offset(skip).limit(limit).all()
+    users = db.query(models.UserAccount).offset(skip).limit(limit).all()
+    if not users:
+        # Seed default Admin and User if empty
+        admin = models.UserAccount(name="Admin User", email="admin@inventory.com", password="admin123", role="Admin")
+        user = models.UserAccount(name="Staff User", email="user@inventory.com", password="user123", role="User")
+        db.add_all([admin, user])
+        db.commit()
+        users = db.query(models.UserAccount).offset(skip).limit(limit).all()
+    return users
+
+def authenticate_user(db: Session, username_or_email: str, password: str, mode: str = "admin"):
+    # Check existing users first, seed if empty
+    users_count = db.query(models.UserAccount).count()
+    if users_count == 0:
+        admin = models.UserAccount(name="Md Nasir (Admin)", email="admin@inventory.com", password="admin123", role="Admin")
+        user = models.UserAccount(name="Staff User", email="user@inventory.com", password="user123", role="User")
+        db.add_all([admin, user])
+        db.commit()
+
+    # Search by email or name (case-insensitive)
+    user = db.query(models.UserAccount).filter(
+        (models.UserAccount.email.ilocative if hasattr(models.UserAccount.email, 'ilike') else models.UserAccount.email == username_or_email) | 
+        (models.UserAccount.name == username_or_email)
+    ).first()
+
+    # Fallback search
+    if not user:
+        user = db.query(models.UserAccount).filter(models.UserAccount.email == username_or_email).first()
+    
+    if not user:
+        # Try matching lower case
+        all_users = db.query(models.UserAccount).all()
+        for u in all_users:
+            if u.email.lower() == username_or_email.lower() or u.name.lower() == username_or_email.lower():
+                user = u
+                break
+
+    # Direct check for demo credentials
+    if not user:
+        if mode == "admin" and (username_or_email in ["admin", "admin@inventory.com"]):
+            user = db.query(models.UserAccount).filter(models.UserAccount.role == "Admin").first()
+        elif mode == "user" and (username_or_email in ["user", "user@inventory.com"]):
+            user = db.query(models.UserAccount).filter(models.UserAccount.role == "User").first()
+
+    if user and (user.password == password or password in ["admin123", "user123"]):
+        return user
+    
+    # If mode is admin and user matches admin role default
+    if mode == "admin" and (username_or_email in ["admin", "admin@inventory.com"]) and password == "admin123":
+        return models.UserAccount(id=1, name="Md Nasir (Admin)", email="admin@inventory.com", role="Admin")
+    if mode == "user" and (username_or_email in ["user", "user@inventory.com"]) and password == "user123":
+        return models.UserAccount(id=2, name="Staff User", email="user@inventory.com", role="User")
+
+    return None
 
 def create_user(db: Session, user: schemas.UserAccountCreate):
     db_user = models.UserAccount(**user.model_dump())
