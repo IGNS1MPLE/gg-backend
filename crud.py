@@ -549,3 +549,110 @@ def delete_user(db: Session, user_id: int):
         return True
     return False
 
+def get_low_stock_alerts(db: Session, limit: int = 5):
+    products = db.query(models.Product).filter(
+        models.Product.current_stock <= models.Product.min_stock_alert
+    ).order_by(models.Product.current_stock.asc()).limit(limit).all()
+    results = []
+    for p in products:
+        min_stk = p.min_stock_alert or 10
+        is_crit = p.current_stock <= (min_stk / 2) or p.current_stock == 0
+        results.append({
+            "id": p.id,
+            "name": p.name,
+            "current_stock": p.current_stock,
+            "min_stock": min_stk,
+            "status": "Critical" if is_crit else "Low"
+        })
+    return results
+
+def _format_date_label(d):
+    if not d:
+        return "Today"
+    today = date.today()
+    if d == today:
+        return "Today"
+    elif d == today - timedelta(days=1):
+        return "Yesterday"
+    else:
+        return d.strftime("%b %d, %Y")
+
+def get_recent_transactions(db: Session, limit: int = 10):
+    txs = []
+    
+    # 1. Collections
+    cols = db.query(models.Collection).order_by(models.Collection.id.desc()).limit(10).all()
+    for c in cols:
+        h_name = c.hawker.name if c.hawker else f"Hawker #{c.hawker_id}"
+        date_str = _format_date_label(c.date)
+        txs.append({
+            "id": f"col_{c.id}",
+            "type": "Collection",
+            "reference": f"COL-{c.id:05d}",
+            "party": h_name,
+            "amount": f"₹{c.amount:,.0f}",
+            "time": date_str,
+            "type_category": "collection"
+        })
+
+    # 2. Daily Logs (Dispatches & Returns)
+    logs = db.query(models.DailyLog).order_by(models.DailyLog.id.desc()).limit(10).all()
+    for l in logs:
+        h_name = l.hawker.name if l.hawker else f"Hawker #{l.hawker_id}"
+        date_str = _format_date_label(l.date)
+        if l.dispatched_qty > 0:
+            amt = f"₹{l.gross_revenue:,.0f}" if l.gross_revenue else f"{l.dispatched_qty} Units"
+            txs.append({
+                "id": f"dist_{l.id}",
+                "type": "Distribution",
+                "reference": f"DIST-{l.id:05d}",
+                "party": h_name,
+                "amount": amt,
+                "time": date_str,
+                "type_category": "distribution"
+            })
+        if l.returned_qty > 0:
+            txs.append({
+                "id": f"ret_{l.id}",
+                "type": "Return",
+                "reference": f"RET-{l.id:05d}",
+                "party": h_name,
+                "amount": f"{l.returned_qty} Units",
+                "time": date_str,
+                "type_category": "return"
+            })
+
+    # 3. Purchases
+    purchases = db.query(models.Purchase).order_by(models.Purchase.id.desc()).limit(10).all()
+    for p in purchases:
+        p_name = p.product.name if p.product else f"Product #{p.product_id}"
+        date_str = _format_date_label(p.date)
+        txs.append({
+            "id": f"pur_{p.id}",
+            "type": "Purchase",
+            "reference": f"PUR-{p.id:05d}",
+            "party": p_name,
+            "amount": f"₹{p.total_cost:,.0f}",
+            "time": date_str,
+            "type_category": "purchase"
+        })
+
+    # 4. Expenses
+    expenses = db.query(models.Expense).order_by(models.Expense.id.desc()).limit(10).all()
+    for e in expenses:
+        date_str = _format_date_label(e.date)
+        txs.append({
+            "id": f"exp_{e.id}",
+            "type": "Expense",
+            "reference": f"EXP-{e.id:05d}",
+            "party": e.category or "General",
+            "amount": f"₹{e.amount:,.0f}",
+            "time": date_str,
+            "type_category": "expense"
+        })
+
+    # Sort descending by reference
+    txs.sort(key=lambda x: x["reference"], reverse=True)
+    return txs[:limit]
+
+

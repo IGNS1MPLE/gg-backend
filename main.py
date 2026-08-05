@@ -193,6 +193,15 @@ def get_dashboard_kpis(db: Session = Depends(get_db)):
 def get_sales_trend(db: Session = Depends(get_db)):
     return crud.get_weekly_sales_trend(db)
 
+@app.get("/analytics/low-stock")
+def get_low_stock_alerts(limit: int = 5, db: Session = Depends(get_db)):
+    return crud.get_low_stock_alerts(db, limit=limit)
+
+@app.get("/analytics/recent-transactions")
+def get_recent_transactions(limit: int = 10, db: Session = Depends(get_db)):
+    return crud.get_recent_transactions(db, limit=limit)
+
+
 # --- Notification System & Product Requests ---
 @app.get("/notifications/")
 def get_notifications(db: Session = Depends(get_db)):
