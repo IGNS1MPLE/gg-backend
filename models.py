@@ -19,6 +19,8 @@ class Product(Base):
     current_stock = Column(Integer, default=0)
     min_stock_alert = Column(Integer, default=10)
     expiry_date = Column(Date, nullable=True)
+    updated_at = Column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now)
+
 
 
 class Hawker(Base):

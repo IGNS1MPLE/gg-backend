@@ -19,7 +19,8 @@ with engine.connect() as conn:
         "ALTER TABLE daily_logs ADD COLUMN remarks VARCHAR DEFAULT ''",
         "ALTER TABLE purchases ADD COLUMN supplier_id INTEGER",
         "ALTER TABLE purchases ADD COLUMN expiry_date DATE",
-        "ALTER TABLE products ADD COLUMN unit VARCHAR DEFAULT 'Pcs'"
+        "ALTER TABLE products ADD COLUMN unit VARCHAR DEFAULT 'Pcs'",
+        "ALTER TABLE products ADD COLUMN updated_at DATETIME"
     ]:
         try:
             conn.execute(text(stmt))

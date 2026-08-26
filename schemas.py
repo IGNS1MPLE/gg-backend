@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional, List
-from datetime import date
+from datetime import date, datetime
 
 # --- Product Schemas ---
 class ProductBase(BaseModel):
@@ -15,15 +15,16 @@ class ProductBase(BaseModel):
     min_stock_alert: Optional[int] = 10
     expiry_date: Optional[date] = None
 
-
 class ProductCreate(ProductBase):
     pass
 
 class Product(ProductBase):
     id: int
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
+
 
 # --- Hawker Schemas ---
 class HawkerBase(BaseModel):

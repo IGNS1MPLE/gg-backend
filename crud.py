@@ -8,10 +8,11 @@ def get_product(db: Session, product_id: int):
     return db.query(models.Product).filter(models.Product.id == product_id).first()
 
 def get_products(db: Session, skip: int = 0, limit: int = 100):
-    return db.query(models.Product).offset(skip).limit(limit).all()
+    return db.query(models.Product).order_by(models.Product.updated_at.desc(), models.Product.id.desc()).offset(skip).limit(limit).all()
 
 def create_product(db: Session, product: schemas.ProductCreate):
     db_product = models.Product(**product.model_dump())
+    db_product.updated_at = datetime.now()
     db.add(db_product)
     db.commit()
     db.refresh(db_product)
@@ -22,9 +23,11 @@ def update_product(db: Session, product_id: int, product: schemas.ProductCreate)
     if db_product:
         for key, value in product.model_dump().items():
             setattr(db_product, key, value)
+        db_product.updated_at = datetime.now()
         db.commit()
         db.refresh(db_product)
     return db_product
+
 
 def delete_product(db: Session, product_id: int):
     db_product = get_product(db, product_id)
