@@ -178,8 +178,9 @@ def delete_collection(collection_id: int, db: Session = Depends(get_db)):
 
 # --- Analytics ---
 @app.get("/analytics/top-products")
-def get_top_products(month: int, year: int, metric: str = 'revenue', limit: int = 10, db: Session = Depends(get_db)):
-    return crud.get_top_products(db, target_month=month, target_year=year, metric=metric, limit=limit)
+def get_top_products(month: int = None, year: int = None, period: str = None, metric: str = 'revenue', limit: int = 10, db: Session = Depends(get_db)):
+    return crud.get_top_products(db, target_month=month, target_year=year, period=period, metric=metric, limit=limit)
+
 
 @app.get("/analytics/top-hawkers")
 def get_top_hawkers(month: int, year: int, metric: str = 'revenue', limit: int = 10, db: Session = Depends(get_db)):

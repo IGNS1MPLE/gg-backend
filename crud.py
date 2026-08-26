@@ -273,17 +273,32 @@ def delete_collection(db: Session, collection_id: int):
     return False
 
 # --- Analytics Methods ---
-def get_top_products(db: Session, target_month: int, target_year: int, metric: str = 'revenue', limit: int = 10):
+def get_top_products(db: Session, target_month: int = None, target_year: int = None, period: str = None, metric: str = 'revenue', limit: int = 10):
     query = db.query(
         models.Product.id,
         models.Product.name,
+        models.Product.selling_price,
+        models.Product.base_cost,
+        func.sum(models.DailyLog.sold_qty).label("total_sold"),
         func.sum(models.DailyLog.gross_revenue).label("total_revenue"),
         func.sum(models.DailyLog.net_profit).label("total_net_profit"),
         func.sum(models.DailyLog.hawker_payout + (models.DailyLog.sold_qty * models.Product.base_cost)).label("total_deductions")
-    ).join(models.DailyLog).filter(
-        func.extract('month', models.DailyLog.date) == target_month,
-        func.extract('year', models.DailyLog.date) == target_year
-    ).group_by(models.Product.id)
+    ).join(models.DailyLog)
+
+    today = date.today()
+    if period == 'week':
+        start_of_week = today - timedelta(days=today.weekday())
+        query = query.filter(models.DailyLog.date >= start_of_week)
+    elif period == 'month':
+        start_of_month = date(today.year, today.month, 1)
+        query = query.filter(models.DailyLog.date >= start_of_month)
+    elif target_month and target_year:
+        query = query.filter(
+            func.extract('month', models.DailyLog.date) == target_month,
+            func.extract('year', models.DailyLog.date) == target_year
+        )
+
+    query = query.group_by(models.Product.id)
 
     if metric == 'revenue':
         query = query.order_by(func.sum(models.DailyLog.gross_revenue).desc())
@@ -292,16 +307,37 @@ def get_top_products(db: Session, target_month: int, target_year: int, metric: s
         
     results = query.limit(limit).all()
     
+    if not results:
+        # Fallback if no sales recorded in this period yet: show available products
+        products = db.query(models.Product).limit(limit).all()
+        return [
+            {
+                "id": p.id,
+                "name": p.name,
+                "price": p.selling_price or p.base_cost or 0,
+                "sold": 0,
+                "total_sold": 0,
+                "total_revenue": 0,
+                "total_net_profit": 0,
+                "total_deductions": 0
+            }
+            for p in products
+        ]
+
     return [
         {
             "id": r.id,
             "name": r.name,
+            "price": r.selling_price or r.base_cost or 0,
+            "sold": r.total_sold or 0,
+            "total_sold": r.total_sold or 0,
             "total_revenue": r.total_revenue or 0,
             "total_net_profit": r.total_net_profit or 0,
             "total_deductions": r.total_deductions or 0
         }
         for r in results
     ]
+
 
 def get_top_hawkers(db: Session, target_month: int, target_year: int, metric: str = 'revenue', limit: int = 10):
     query = db.query(
