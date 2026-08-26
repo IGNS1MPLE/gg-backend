@@ -369,16 +369,22 @@ def get_top_hawkers(db: Session, target_month: int, target_year: int, metric: st
 
 def get_dashboard_kpis(db: Session):
     today = date.today()
+    yesterday = today - timedelta(days=1)
     
     # Row 1 KPIs
     todays_sales = float(db.query(func.sum(models.DailyLog.gross_revenue)).filter(models.DailyLog.date == today).scalar() or 0.0)
+    yesterdays_sales = float(db.query(func.sum(models.DailyLog.gross_revenue)).filter(models.DailyLog.date == yesterday).scalar() or 0.0)
+    
     profit_today = float(db.query(func.sum(models.DailyLog.net_profit)).filter(models.DailyLog.date == today).scalar() or 0.0)
     active_hawkers = db.query(models.Hawker).filter(models.Hawker.status == True).count()
     low_stock_items = db.query(models.Product).filter(models.Product.current_stock <= models.Product.min_stock_alert).count()
     
     # Row 2 KPIs
     products_issued_today = int(db.query(func.sum(models.DailyLog.dispatched_qty)).filter(models.DailyLog.date == today).scalar() or 0)
+    products_issued_yesterday = int(db.query(func.sum(models.DailyLog.dispatched_qty)).filter(models.DailyLog.date == yesterday).scalar() or 0)
+    
     returns_today = int(db.query(func.sum(models.DailyLog.returned_qty)).filter(models.DailyLog.date == today).scalar() or 0)
+    sold_today = int(db.query(func.sum(models.DailyLog.sold_qty)).filter(models.DailyLog.date == today).scalar() or 0)
     
     hawker_debt = db.query(func.sum(models.Hawker.balance)).filter(models.Hawker.balance < 0).scalar() or 0.0
     pending_collection = float(abs(hawker_debt))
@@ -392,6 +398,22 @@ def get_dashboard_kpis(db: Session):
     collection_today = float(collections_direct + collections_returns)
     expenses_today = float(db.query(func.sum(models.Expense.amount)).filter(models.Expense.date == today).scalar() or 0.0)
     
+    def calc_growth(curr, prev):
+        if prev > 0:
+            val = round(((curr - prev) / prev) * 100, 1)
+            return int(val) if val.is_integer() else val
+        elif curr > 0:
+            return 100
+        else:
+            return 0
+
+    sales_growth = calc_growth(todays_sales, yesterdays_sales)
+    orders_growth = calc_growth(products_issued_today, products_issued_yesterday)
+
+    avg_sales_today = (todays_sales / active_hawkers) if active_hawkers > 0 else 0.0
+    avg_sales_yesterday = (yesterdays_sales / active_hawkers) if active_hawkers > 0 else 0.0
+    avg_sales_growth = calc_growth(avg_sales_today, avg_sales_yesterday)
+
     return {
         "todays_sales": todays_sales,
         "profit_today": profit_today,
@@ -399,11 +421,17 @@ def get_dashboard_kpis(db: Session):
         "low_stock_items": low_stock_items,
         "products_issued_today": products_issued_today,
         "returns_today": returns_today,
+        "sold_today": sold_today,
         "pending_collection": pending_collection,
         "top_selling_product": top_selling_product,
         "collection_today": collection_today,
-        "expenses_today": expenses_today
+        "expenses_today": expenses_today,
+        "sales_growth": sales_growth,
+        "orders_growth": orders_growth,
+        "hawkers_growth": 0,
+        "avg_sales_growth": avg_sales_growth
     }
+
 
 def get_weekly_sales_trend(db: Session):
     today = date.today()
@@ -446,21 +474,29 @@ def get_notifications(db: Session):
     today = date.today()
     thirty_days = today + timedelta(days=30)
     notifications = []
+    
+    # Get dismissed notification IDs
+    dismissed_ids = {d.id for d in db.query(models.DismissedNotification).all()}
 
-    # 1. 🔔 Low stock alerts
-    low_stock_prods = db.query(models.Product).filter(models.Product.current_stock <= models.Product.min_stock_alert).all()
+    # 1. 🔔 Low stock alerts (only for items with configured min_stock_alert > 0)
+    low_stock_prods = db.query(models.Product).filter(
+        models.Product.min_stock_alert > 0,
+        models.Product.current_stock <= models.Product.min_stock_alert
+    ).all()
+    
     for p in low_stock_prods:
         notifications.append({
             "id": f"low_stock_{p.id}",
             "category": "Low Stock Alert",
             "type": "danger",
             "title": f"Low Stock: {p.name}",
-            "description": f"Current stock level is {p.current_stock} (Below threshold of {p.min_stock_alert}).",
+            "description": f"Current stock level is {p.current_stock} (Threshold: {p.min_stock_alert}).",
             "link": "/inventory"
         })
 
-    # 2. 🔔 Pending collections (if returned product not updated)
+    # 2. 🔔 Pending collections (dispatches prior to today with no returns/cash collected)
     pending_logs = db.query(models.DailyLog).filter(
+        models.DailyLog.date < today,
         models.DailyLog.returned_qty == 0,
         models.DailyLog.damaged_qty == 0,
         models.DailyLog.cash_collected == 0,
@@ -479,10 +515,11 @@ def get_notifications(db: Session):
             "link": "/returns"
         })
 
-    # 3. 🔔 Product expiry
+    # 3. 🔔 Product expiry (only for products currently in stock)
     expiring_prods = db.query(models.Product).filter(
         models.Product.expiry_date != None,
-        models.Product.expiry_date <= thirty_days
+        models.Product.expiry_date <= thirty_days,
+        models.Product.current_stock > 0
     ).all()
     
     for p in expiring_prods:
@@ -496,22 +533,7 @@ def get_notifications(db: Session):
             "link": "/inventory"
         })
 
-    # 4. 🔔 Hawker absence
-    active_hawkers = db.query(models.Hawker).filter(models.Hawker.status == True).all()
-    today_logged_hawker_ids = {log.hawker_id for log in db.query(models.DailyLog.hawker_id).filter(models.DailyLog.date == today).all()}
-    
-    for h in active_hawkers:
-        if h.id not in today_logged_hawker_ids:
-            notifications.append({
-                "id": f"absence_{h.id}",
-                "category": "Hawker Absence Alert",
-                "type": "info",
-                "title": f"Hawker Unassigned: {h.name}",
-                "description": f"Hawker '{h.name}' ({h.route or 'No Route'}) has no stock dispatches logged for today.",
-                "link": "/distribution"
-            })
-
-    # 5. 🔔 New product requests
+    # 4. 🔔 New product requests
     pending_requests = db.query(models.ProductRequest).filter(models.ProductRequest.status == "Pending").all()
     for req in pending_requests:
         h_name = req.hawker.name if req.hawker else "Staff"
@@ -524,10 +546,28 @@ def get_notifications(db: Session):
             "link": "/products"
         })
 
+    # Filter out dismissed notifications
+    active_notifications = [n for n in notifications if n["id"] not in dismissed_ids]
+
     return {
-        "count": len(notifications),
-        "notifications": notifications
+        "count": len(active_notifications),
+        "notifications": active_notifications
     }
+
+def dismiss_notification(db: Session, notification_id: str):
+    existing = db.query(models.DismissedNotification).filter(models.DismissedNotification.id == notification_id).first()
+    if not existing:
+        db_dim = models.DismissedNotification(id=notification_id)
+        db.add(db_dim)
+        db.commit()
+    return True
+
+def clear_all_notifications(db: Session):
+    notifs_data = get_notifications(db)
+    for n in notifs_data.get("notifications", []):
+        dismiss_notification(db, n["id"])
+    return True
+
 
 # --- Categories ---
 def get_categories(db: Session, skip: int = 0, limit: int = 100):
@@ -743,5 +783,53 @@ def get_recent_transactions(db: Session, limit: int = 10):
     # Sort descending by reference
     txs.sort(key=lambda x: x["reference"], reverse=True)
     return txs[:limit]
+
+
+# --- Product Unit CRUD ---
+def get_units(db: Session, skip: int = 0, limit: int = 100):
+    units = db.query(models.ProductUnit).offset(skip).limit(limit).all()
+    if not units and skip == 0:
+        default_units = [
+            {"name": "Pcs", "abbreviation": "pcs", "description": "Individual Pieces / Items"},
+            {"name": "Box", "abbreviation": "box", "description": "Carton or Box Container"},
+            {"name": "Pack", "abbreviation": "pk", "description": "Multi-item Pack or Bundle"},
+            {"name": "Kg", "abbreviation": "kg", "description": "Kilograms (Weight)"},
+            {"name": "Gram", "abbreviation": "g", "description": "Grams (Weight)"},
+            {"name": "Liter", "abbreviation": "L", "description": "Liters (Volume)"},
+            {"name": "Bottle", "abbreviation": "btl", "description": "Bottled Beverages or Liquids"},
+            {"name": "Can", "abbreviation": "can", "description": "Canned Drinks / Items"},
+            {"name": "Dozen", "abbreviation": "dz", "description": "Set of 12 Items"}
+        ]
+        for u in default_units:
+            db_u = models.ProductUnit(**u)
+            db.add(db_u)
+        db.commit()
+        units = db.query(models.ProductUnit).offset(skip).limit(limit).all()
+    return units
+
+def create_unit(db: Session, unit: schemas.ProductUnitCreate):
+    db_unit = models.ProductUnit(**unit.model_dump())
+    db.add(db_unit)
+    db.commit()
+    db.refresh(db_unit)
+    return db_unit
+
+def update_unit(db: Session, unit_id: int, unit: schemas.ProductUnitCreate):
+    db_unit = db.query(models.ProductUnit).filter(models.ProductUnit.id == unit_id).first()
+    if db_unit:
+        for key, value in unit.model_dump().items():
+            setattr(db_unit, key, value)
+        db.commit()
+        db.refresh(db_unit)
+    return db_unit
+
+def delete_unit(db: Session, unit_id: int):
+    db_unit = db.query(models.ProductUnit).filter(models.ProductUnit.id == unit_id).first()
+    if db_unit:
+        db.delete(db_unit)
+        db.commit()
+        return True
+    return False
+
 
 

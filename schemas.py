@@ -6,6 +6,7 @@ from datetime import date
 class ProductBase(BaseModel):
     name: str
     category: Optional[str] = "General"
+    unit: Optional[str] = "Pcs"
     barcode: Optional[str] = None
     base_cost: float
     selling_price: float
@@ -13,6 +14,7 @@ class ProductBase(BaseModel):
     current_stock: Optional[int] = 0
     min_stock_alert: Optional[int] = 10
     expiry_date: Optional[date] = None
+
 
 class ProductCreate(ProductBase):
     pass
@@ -170,6 +172,21 @@ class CategoryCreate(CategoryBase):
     pass
 
 class Category(CategoryBase):
+    id: int
+
+    class Config:
+        from_attributes = True
+
+# --- Product Unit Schemas ---
+class ProductUnitBase(BaseModel):
+    name: str
+    abbreviation: Optional[str] = None
+    description: Optional[str] = None
+
+class ProductUnitCreate(ProductUnitBase):
+    pass
+
+class ProductUnit(ProductUnitBase):
     id: int
 
     class Config:

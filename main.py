@@ -18,7 +18,8 @@ with engine.connect() as conn:
         "ALTER TABLE daily_logs ADD COLUMN damaged_qty INTEGER DEFAULT 0",
         "ALTER TABLE daily_logs ADD COLUMN remarks VARCHAR DEFAULT ''",
         "ALTER TABLE purchases ADD COLUMN supplier_id INTEGER",
-        "ALTER TABLE purchases ADD COLUMN expiry_date DATE"
+        "ALTER TABLE purchases ADD COLUMN expiry_date DATE",
+        "ALTER TABLE products ADD COLUMN unit VARCHAR DEFAULT 'Pcs'"
     ]:
         try:
             conn.execute(text(stmt))
@@ -208,6 +209,17 @@ def get_recent_transactions(limit: int = 10, db: Session = Depends(get_db)):
 def get_notifications(db: Session = Depends(get_db)):
     return crud.get_notifications(db)
 
+@app.delete("/notifications/{notification_id}")
+def delete_notification(notification_id: str, db: Session = Depends(get_db)):
+    crud.dismiss_notification(db, notification_id)
+    return {"ok": True}
+
+@app.delete("/notifications/")
+def clear_all_notifications(db: Session = Depends(get_db)):
+    crud.clear_all_notifications(db)
+    return {"ok": True}
+
+
 @app.post("/product-requests/", response_model=schemas.ProductRequest)
 def create_product_request(req: schemas.ProductRequestCreate, db: Session = Depends(get_db)):
     return crud.create_product_request(db=db, req=req)
@@ -238,6 +250,30 @@ def delete_category(cat_id: int, db: Session = Depends(get_db)):
     if not success:
         raise HTTPException(status_code=404, detail="Category not found")
     return {"ok": True}
+
+# --- Product Units ---
+@app.post("/units/", response_model=schemas.ProductUnit)
+def create_unit(unit: schemas.ProductUnitCreate, db: Session = Depends(get_db)):
+    return crud.create_unit(db=db, unit=unit)
+
+@app.get("/units/", response_model=List[schemas.ProductUnit])
+def read_units(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    return crud.get_units(db, skip=skip, limit=limit)
+
+@app.put("/units/{unit_id}", response_model=schemas.ProductUnit)
+def update_unit(unit_id: int, unit: schemas.ProductUnitCreate, db: Session = Depends(get_db)):
+    updated_unit = crud.update_unit(db, unit_id, unit)
+    if not updated_unit:
+        raise HTTPException(status_code=404, detail="Product Unit not found")
+    return updated_unit
+
+@app.delete("/units/{unit_id}")
+def delete_unit(unit_id: int, db: Session = Depends(get_db)):
+    success = crud.delete_unit(db, unit_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Product Unit not found")
+    return {"ok": True}
+
 
 # --- Authentication & Users ---
 @app.post("/auth/login", response_model=schemas.LoginResponse)

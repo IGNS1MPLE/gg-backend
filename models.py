@@ -9,6 +9,7 @@ class Product(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
     category = Column(String, index=True, default="General")
+    unit = Column(String, index=True, default="Pcs")
     barcode = Column(String, index=True, nullable=True)
     base_cost = Column(Float, default=0.0)
     selling_price = Column(Float, default=0.0)
@@ -18,6 +19,7 @@ class Product(Base):
     current_stock = Column(Integer, default=0)
     min_stock_alert = Column(Integer, default=10)
     expiry_date = Column(Date, nullable=True)
+
 
 class Hawker(Base):
     __tablename__ = "hawkers"
@@ -132,3 +134,19 @@ class UserAccount(Base):
     role = Column(String, default="Store Manager") # Admin, Store Manager, Dispatcher, Accountant, User
     status = Column(Boolean, default=True)
     notes = Column(String, nullable=True)
+
+class ProductUnit(Base):
+    __tablename__ = "product_units"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True, unique=True)
+    abbreviation = Column(String, nullable=True)
+    description = Column(String, nullable=True)
+
+class DismissedNotification(Base):
+    __tablename__ = "dismissed_notifications"
+
+    id = Column(String, primary_key=True, index=True)
+    dismissed_at = Column(DateTime, default=datetime.datetime.now)
+
+
