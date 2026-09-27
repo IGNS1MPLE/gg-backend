@@ -222,10 +222,12 @@ def create_purchase(db: Session, purchase: schemas.PurchaseCreate):
     # Update inventory stock
     update_product_stock(db, purchase.product_id, purchase.quantity)
     
-    # Update product expiry_date if provided in purchase
-    if purchase.expiry_date:
-        product = get_product(db, purchase.product_id)
-        if product:
+    # Update product base_cost and expiry_date if provided in purchase
+    product = get_product(db, purchase.product_id)
+    if product:
+        if purchase.quantity > 0:
+            product.base_cost = round(purchase.total_cost / purchase.quantity, 2)
+        if purchase.expiry_date:
             product.expiry_date = purchase.expiry_date
     
     db.commit()
@@ -264,8 +266,16 @@ def get_collections(db: Session, skip: int = 0, limit: int = 100):
 def delete_purchase(db: Session, purchase_id: int):
     db_purchase = db.query(models.Purchase).filter(models.Purchase.id == purchase_id).first()
     if db_purchase:
-        update_product_stock(db, db_purchase.product_id, -db_purchase.quantity)
+        product_id = db_purchase.product_id
+        update_product_stock(db, product_id, -db_purchase.quantity)
         db.delete(db_purchase)
+        db.flush()
+        # If any purchases remain for this product, sync base_cost to the latest remaining purchase
+        latest_remaining = db.query(models.Purchase).filter(models.Purchase.product_id == product_id).order_by(models.Purchase.date.desc(), models.Purchase.id.desc()).first()
+        if latest_remaining and latest_remaining.quantity > 0:
+            product = get_product(db, product_id)
+            if product:
+                product.base_cost = round(latest_remaining.total_cost / latest_remaining.quantity, 2)
         db.commit()
         return True
     return False
