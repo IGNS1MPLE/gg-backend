@@ -103,6 +103,15 @@ class Collection(Base):
     amount = Column(Float, default=0.0)
     payment_method = Column(String, default="Cash")
     
+    # Audit trail
+    is_edited = Column(Boolean, default=False)
+    edited_at = Column(DateTime, nullable=True)
+    original_amount = Column(Float, nullable=True)
+    original_date = Column(Date, nullable=True)
+    original_hawker_id = Column(Integer, nullable=True)
+    original_payment_method = Column(String, nullable=True)
+    edit_reason = Column(String, nullable=True, default="")
+    
     hawker = relationship("Hawker")
 
 class ProductRequest(Base):

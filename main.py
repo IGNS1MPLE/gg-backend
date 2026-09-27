@@ -20,7 +20,14 @@ with engine.connect() as conn:
         "ALTER TABLE purchases ADD COLUMN supplier_id INTEGER",
         "ALTER TABLE purchases ADD COLUMN expiry_date DATE",
         "ALTER TABLE products ADD COLUMN unit VARCHAR DEFAULT 'Pcs'",
-        "ALTER TABLE products ADD COLUMN updated_at DATETIME"
+        "ALTER TABLE products ADD COLUMN updated_at DATETIME",
+        "ALTER TABLE collections ADD COLUMN is_edited BOOLEAN DEFAULT 0",
+        "ALTER TABLE collections ADD COLUMN edited_at DATETIME",
+        "ALTER TABLE collections ADD COLUMN original_amount FLOAT",
+        "ALTER TABLE collections ADD COLUMN original_date DATE",
+        "ALTER TABLE collections ADD COLUMN original_hawker_id INTEGER",
+        "ALTER TABLE collections ADD COLUMN original_payment_method VARCHAR DEFAULT ''",
+        "ALTER TABLE collections ADD COLUMN edit_reason VARCHAR DEFAULT ''"
     ]:
         try:
             conn.execute(text(stmt))
@@ -170,6 +177,13 @@ def create_collection(collection: schemas.CollectionCreate, db: Session = Depend
 @app.get("/collections/", response_model=List[schemas.Collection])
 def read_collections(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     return crud.get_collections(db, skip=skip, limit=limit)
+
+@app.put("/collections/{collection_id}", response_model=schemas.Collection)
+def update_collection(collection_id: int, collection: schemas.CollectionUpdate, db: Session = Depends(get_db)):
+    db_collection = crud.update_collection(db=db, collection_id=collection_id, collection=collection)
+    if not db_collection:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    return db_collection
 
 @app.delete("/collections/{collection_id}")
 def delete_collection(collection_id: int, db: Session = Depends(get_db)):

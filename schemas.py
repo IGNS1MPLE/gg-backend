@@ -135,12 +135,27 @@ class CollectionBase(BaseModel):
     hawker_id: int
     amount: float
     payment_method: Optional[str] = "Cash"
+    edit_reason: Optional[str] = ""
 
 class CollectionCreate(CollectionBase):
     pass
 
+class CollectionUpdate(BaseModel):
+    date: date
+    hawker_id: int
+    amount: float
+    payment_method: Optional[str] = "Cash"
+    edit_reason: Optional[str] = ""
+
 class Collection(CollectionBase):
     id: int
+    is_edited: Optional[bool] = False
+    edited_at: Optional[datetime] = None
+    original_amount: Optional[float] = None
+    original_date: Optional[date] = None
+    original_hawker_id: Optional[int] = None
+    original_payment_method: Optional[str] = None
+    edit_reason: Optional[str] = ""
 
     class Config:
         from_attributes = True

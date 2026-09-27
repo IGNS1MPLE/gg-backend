@@ -263,6 +263,50 @@ def create_collection(db: Session, collection: schemas.CollectionCreate):
 def get_collections(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.Collection).offset(skip).limit(limit).all()
 
+def update_collection(db: Session, collection_id: int, collection: schemas.CollectionUpdate):
+    db_collection = db.query(models.Collection).filter(models.Collection.id == collection_id).first()
+    if not db_collection:
+        return None
+
+    old_amount = float(db_collection.amount or 0.0)
+    old_hawker_id = db_collection.hawker_id
+    new_amount = float(collection.amount)
+    new_hawker_id = collection.hawker_id
+
+    # 1. Audit trail preservation: record original state before first edit
+    if not db_collection.is_edited:
+        db_collection.original_amount = old_amount
+        db_collection.original_date = db_collection.date
+        db_collection.original_hawker_id = old_hawker_id
+        db_collection.original_payment_method = db_collection.payment_method
+
+    db_collection.is_edited = True
+    db_collection.edited_at = datetime.now()
+    if collection.edit_reason:
+        db_collection.edit_reason = collection.edit_reason
+
+    # 2. Recalculate affected hawker balance(s):
+    # Reverse old payment's effect, then apply new payment's effect
+    if old_hawker_id == new_hawker_id:
+        amount_diff = new_amount - old_amount
+        if amount_diff != 0:
+            update_hawker_balance(db, old_hawker_id, amount_diff)
+    else:
+        # Revert old payment from previous hawker
+        update_hawker_balance(db, old_hawker_id, -old_amount)
+        # Apply new payment to new hawker
+        update_hawker_balance(db, new_hawker_id, new_amount)
+
+    # 3. Update collection fields
+    db_collection.date = collection.date
+    db_collection.hawker_id = new_hawker_id
+    db_collection.amount = new_amount
+    db_collection.payment_method = collection.payment_method
+
+    db.commit()
+    db.refresh(db_collection)
+    return db_collection
+
 def delete_purchase(db: Session, purchase_id: int):
     db_purchase = db.query(models.Purchase).filter(models.Purchase.id == purchase_id).first()
     if db_purchase:
