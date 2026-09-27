@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 import models, schemas
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 
 # --- Product ---
 def get_product(db: Session, product_id: int):
@@ -24,6 +24,18 @@ def update_product(db: Session, product_id: int, product: schemas.ProductCreate)
         for key, value in product.model_dump().items():
             setattr(db_product, key, value)
         db_product.updated_at = datetime.now()
+        
+        # Recalculate financial fields for any existing daily logs for this product
+        logs = db.query(models.DailyLog).filter(models.DailyLog.product_id == product_id).all()
+        for log in logs:
+            if log.sold_qty is not None:
+                log.gross_revenue = (log.sold_qty or 0) * db_product.selling_price
+                log.hawker_payout = (log.sold_qty or 0) * db_product.commission_rate
+                cogs = (log.sold_qty or 0) * db_product.base_cost
+                log.net_profit = log.gross_revenue - (cogs + log.hawker_payout)
+                expected_payment = log.gross_revenue - log.hawker_payout
+                log.outstanding_amount = expected_payment - (log.cash_collected or 0.0)
+
         db.commit()
         db.refresh(db_product)
     return db_product
