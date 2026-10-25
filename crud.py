@@ -65,20 +65,86 @@ def update_product_stock(db: Session, product_id: int, quantity_change: int):
     return product
 
 # --- Hawker ---
+# --- Hawker & Balance Computation ---
+def compute_hawker_unsettled_balance(db: Session, hawker_id: int) -> float:
+    """
+    Single source of truth for a hawker's unsettled amount (Account Balance).
+    Sign convention:
+      - Positive (> 0): Hawker owes money (unsettled debt)
+      - Zero (== 0): Fully settled / no dues
+      - Negative (< 0): Hawker has credit / overpayment (hub owes hawker)
+    Formula:
+      Total Net Value of Dispatches - Cash Collected during Settlement - Standalone Collections
+    Rules:
+      - For each daily log:
+        - If settled or returns logged:
+            sold_qty = max(0, dispatched_qty - returned_qty - (damaged_qty or 0))
+            expected_payment = sold_qty * (selling_price - commission_rate)
+            log_unsettled = expected_payment - cash_collected
+        - If pending/active (not yet returned or settled):
+            log_unsettled = dispatched_qty * (selling_price - commission_rate)
+        - Damaged items are absorbed as loss by the hub (not billed to the hawker).
+        - Each log's outstanding_amount column is kept updated to match this log_unsettled value.
+      - Total hawker debt = sum(log_unsettled) - sum(standalone Collection.amount).
+    """
+    hawker = db.query(models.Hawker).filter(models.Hawker.id == hawker_id).first()
+    if not hawker:
+        return 0.0
+
+    logs = db.query(models.DailyLog).filter(models.DailyLog.hawker_id == hawker_id).all()
+    total_logs_unsettled = 0.0
+
+    for log in logs:
+        product = db.query(models.Product).filter(models.Product.id == log.product_id).first()
+        net_price = max(0.0, float(product.selling_price - product.commission_rate)) if product else 0.0
+        
+        is_settled_or_returned = (
+            (log.returned_qty or 0) > 0 or 
+            (log.damaged_qty or 0) > 0 or 
+            (log.sold_qty or 0) > 0 or 
+            (log.cash_collected or 0.0) > 0
+        )
+        
+        if is_settled_or_returned:
+            sold = max(0, (log.dispatched_qty or 0) - (log.returned_qty or 0) - (log.damaged_qty or 0))
+            expected = sold * net_price
+            log_due = expected - float(log.cash_collected or 0.0)
+        else:
+            log_due = float(log.dispatched_qty or 0) * net_price
+
+        log_due_rounded = round(float(log_due), 2)
+        if log.outstanding_amount != log_due_rounded:
+            log.outstanding_amount = log_due_rounded
+        total_logs_unsettled += log_due
+
+    total_collections = db.query(func.coalesce(func.sum(models.Collection.amount), 0.0)).filter(models.Collection.hawker_id == hawker_id).scalar() or 0.0
+
+    net_balance = round(float(total_logs_unsettled - total_collections), 2)
+    return net_balance
+
 def sync_hawker_balance(db: Session, hawker_id: int):
     hawker = db.query(models.Hawker).filter(models.Hawker.id == hawker_id).first()
     if hawker:
-        total_outstanding = db.query(func.coalesce(func.sum(models.DailyLog.outstanding_amount), 0.0)).filter(models.DailyLog.hawker_id == hawker_id).scalar() or 0.0
-        total_collections = db.query(func.coalesce(func.sum(models.Collection.amount), 0.0)).filter(models.Collection.hawker_id == hawker_id).scalar() or 0.0
-        # Ledger balance: negative means they owe money (unsettled debt), positive means credit
-        hawker.balance = round(float(total_collections - total_outstanding), 2)
+        balance = compute_hawker_unsettled_balance(db, hawker_id)
+        hawker.balance = balance
+        setattr(hawker, 'unsettled_amount', balance)
         db.commit()
         db.refresh(hawker)
     return hawker
 
+def sync_all_hawkers_and_logs(db: Session):
+    """One-time or startup sync ensuring all hawkers and logs adhere to the single source of truth."""
+    hawkers = db.query(models.Hawker).all()
+    for h in hawkers:
+        sync_hawker_balance(db, h.id)
+    return len(hawkers)
+
 def get_hawker(db: Session, hawker_id: int):
     sync_hawker_balance(db, hawker_id)
-    return db.query(models.Hawker).filter(models.Hawker.id == hawker_id).first()
+    hawker = db.query(models.Hawker).filter(models.Hawker.id == hawker_id).first()
+    if hawker:
+        setattr(hawker, 'unsettled_amount', hawker.balance)
+    return hawker
 
 def get_hawkers(db: Session, hawker_id: Optional[int] = None, skip: int = 0, limit: int = 100):
     query = db.query(models.Hawker)
@@ -87,6 +153,7 @@ def get_hawkers(db: Session, hawker_id: Optional[int] = None, skip: int = 0, lim
     hawkers = query.offset(skip).limit(limit).all()
     for h in hawkers:
         sync_hawker_balance(db, h.id)
+        setattr(h, 'unsettled_amount', h.balance)
     return hawkers
 
 def create_hawker(db: Session, hawker: schemas.HawkerCreate):
@@ -115,13 +182,9 @@ def delete_hawker(db: Session, hawker_id: int):
         return True
     return False
 
-def update_hawker_balance(db: Session, hawker_id: int, amount_change: float):
-    hawker = db.query(models.Hawker).filter(models.Hawker.id == hawker_id).first()
-    if hawker:
-        hawker.balance += amount_change
-        db.commit()
-        db.refresh(hawker)
-    return hawker
+def update_hawker_balance(db: Session, hawker_id: int, amount_change: float = 0.0):
+    # Deterministically resync from single source of truth
+    return sync_hawker_balance(db, hawker_id)
 
 # --- Daily Log (Dispatch & Returns) ---
 def dispatch_product(db: Session, log: schemas.DailyLogCreate):
@@ -131,6 +194,9 @@ def dispatch_product(db: Session, log: schemas.DailyLogCreate):
         models.DailyLog.hawker_id == log.hawker_id,
         models.DailyLog.product_id == log.product_id
     ).first()
+
+    product = get_product(db, log.product_id)
+    net_price = max(0.0, float(product.selling_price - product.commission_rate)) if product else 0.0
 
     if existing_log:
         existing_log.dispatched_qty += log.dispatched_qty
@@ -143,7 +209,7 @@ def dispatch_product(db: Session, log: schemas.DailyLogCreate):
         
     # Update hawker's route assignment if route is provided
     if log.route:
-        hawker = get_hawker(db, log.hawker_id)
+        hawker = db.query(models.Hawker).filter(models.Hawker.id == log.hawker_id).first()
         if hawker:
             hawker.route = log.route
 
@@ -151,6 +217,10 @@ def dispatch_product(db: Session, log: schemas.DailyLogCreate):
     update_product_stock(db, log.product_id, -log.dispatched_qty)
         
     db.commit()
+    db.refresh(db_log)
+    
+    # Sync hawker balance immediately so new stock liability is active
+    sync_hawker_balance(db, log.hawker_id)
     db.refresh(db_log)
     return db_log
 
@@ -170,20 +240,16 @@ def log_returns(db: Session, log_id: int, returned: schemas.DailyLogReturn):
     # Financial calculations based on sold quantity
     product = get_product(db, db_log.product_id)
     if product:
-        db_log.gross_revenue = db_log.sold_qty * product.selling_price
-        db_log.hawker_payout = db_log.sold_qty * product.commission_rate
-        cogs = db_log.sold_qty * product.base_cost
-        db_log.net_profit = db_log.gross_revenue - (cogs + db_log.hawker_payout)
+        db_log.gross_revenue = round(float(db_log.sold_qty * product.selling_price), 2)
+        db_log.hawker_payout = round(float(db_log.sold_qty * product.commission_rate), 2)
+        cogs = round(float(db_log.sold_qty * product.base_cost), 2)
+        db_log.net_profit = round(float(db_log.gross_revenue - (cogs + db_log.hawker_payout)), 2)
+        expected_payment = db_log.gross_revenue - db_log.hawker_payout
+    else:
+        expected_payment = 0.0
         
     db_log.cash_collected = returned.cash_collected
-    
-    # Calculate outstanding: Hawker should pay (gross - their payout), but they paid cash_collected
-    expected_payment = db_log.gross_revenue - db_log.hawker_payout
-    db_log.outstanding_amount = expected_payment - db_log.cash_collected
-    
-    # Update hawker balance (negative means they owe us)
-    if db_log.outstanding_amount != 0:
-        update_hawker_balance(db, db_log.hawker_id, -db_log.outstanding_amount)
+    db_log.outstanding_amount = round(float(expected_payment - db_log.cash_collected), 2)
         
     # Update inventory - increase sellable stock ONLY by returned unsold qty (damaged items do not return to sellable inventory)
     update_product_stock(db, db_log.product_id, returned.returned_qty)
@@ -498,8 +564,8 @@ def get_dashboard_kpis(db: Session):
     returns_today = int(db.query(func.sum(models.DailyLog.returned_qty)).filter(models.DailyLog.date == today).scalar() or 0)
     sold_today = int(db.query(func.sum(models.DailyLog.sold_qty)).filter(models.DailyLog.date == today).scalar() or 0)
     
-    hawker_debt = db.query(func.sum(models.Hawker.balance)).filter(models.Hawker.balance < 0).scalar() or 0.0
-    pending_collection = float(abs(hawker_debt))
+    hawker_debt = db.query(func.sum(models.Hawker.balance)).filter(models.Hawker.balance > 0).scalar() or 0.0
+    pending_collection = float(hawker_debt)
     
     top_prod_query = db.query(models.Product.name).join(models.DailyLog).group_by(models.Product.id).order_by(func.sum(models.DailyLog.gross_revenue).desc()).first()
     top_selling_product = top_prod_query[0] if top_prod_query else "None"

@@ -47,6 +47,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+def on_startup():
+    db = SessionLocal()
+    try:
+        crud.sync_all_hawkers_and_logs(db)
+    except Exception as e:
+        print(f"Startup hawker sync error: {e}")
+    finally:
+        db.close()
+
 # --- Products ---
 @app.post("/products/", response_model=schemas.Product)
 def create_product(product: schemas.ProductCreate, db: Session = Depends(get_db)):
@@ -78,6 +88,13 @@ def create_hawker(hawker: schemas.HawkerCreate, db: Session = Depends(get_db)):
 @app.get("/hawkers/", response_model=List[schemas.Hawker])
 def read_hawkers(hawker_id: Optional[int] = None, skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     return crud.get_hawkers(db, hawker_id=hawker_id, skip=skip, limit=limit)
+
+@app.get("/hawkers/{hawker_id}", response_model=schemas.Hawker)
+def read_hawker(hawker_id: int, db: Session = Depends(get_db)):
+    hawker = crud.get_hawker(db, hawker_id=hawker_id)
+    if not hawker:
+        raise HTTPException(status_code=404, detail="Hawker not found")
+    return hawker
 
 @app.put("/hawkers/{hawker_id}", response_model=schemas.Hawker)
 def update_hawker(hawker_id: int, hawker: schemas.HawkerCreate, db: Session = Depends(get_db)):

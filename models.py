@@ -31,7 +31,15 @@ class Hawker(Base):
     contact_info = Column(String, nullable=True)
     route = Column(String, nullable=True, default="")
     status = Column(Boolean, default=True) # Active or Inactive
-    balance = Column(Float, default=0.0) # Outstanding balance (negative means they owe us, positive means we owe them or they have credit)
+    balance = Column(Float, default=0.0) # Unsettled balance: positive = hawker owes, 0 = settled, negative = credit/advance
+
+    @property
+    def unsettled_amount(self):
+        return self.balance
+
+    @unsettled_amount.setter
+    def unsettled_amount(self, value):
+        self.balance = value
 
 class DailyLog(Base):
     __tablename__ = "daily_logs"

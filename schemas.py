@@ -33,6 +33,7 @@ class HawkerBase(BaseModel):
     route: Optional[str] = ""
     status: Optional[bool] = True
     balance: Optional[float] = 0.0
+    unsettled_amount: Optional[float] = 0.0
 
 class HawkerCreate(HawkerBase):
     pass
