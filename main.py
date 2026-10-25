@@ -1,10 +1,11 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
+import asyncio
 
 import models, schemas, crud
-from database import engine, get_db
+from database import engine, get_db, SessionLocal
 
 from sqlalchemy import text
 
@@ -27,7 +28,8 @@ with engine.connect() as conn:
         "ALTER TABLE collections ADD COLUMN original_date DATE",
         "ALTER TABLE collections ADD COLUMN original_hawker_id INTEGER",
         "ALTER TABLE collections ADD COLUMN original_payment_method VARCHAR DEFAULT ''",
-        "ALTER TABLE collections ADD COLUMN edit_reason VARCHAR DEFAULT ''"
+        "ALTER TABLE collections ADD COLUMN edit_reason VARCHAR DEFAULT ''",
+        "ALTER TABLE purchases ADD COLUMN hidden_from_history BOOLEAN DEFAULT 0"
     ]:
         try:
             conn.execute(text(stmt))
@@ -74,8 +76,8 @@ def create_hawker(hawker: schemas.HawkerCreate, db: Session = Depends(get_db)):
     return crud.create_hawker(db=db, hawker=hawker)
 
 @app.get("/hawkers/", response_model=List[schemas.Hawker])
-def read_hawkers(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    return crud.get_hawkers(db, skip=skip, limit=limit)
+def read_hawkers(hawker_id: Optional[int] = None, skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    return crud.get_hawkers(db, hawker_id=hawker_id, skip=skip, limit=limit)
 
 @app.put("/hawkers/{hawker_id}", response_model=schemas.Hawker)
 def update_hawker(hawker_id: int, hawker: schemas.HawkerCreate, db: Session = Depends(get_db)):
@@ -97,8 +99,8 @@ def dispatch_product(log: schemas.DailyLogCreate, db: Session = Depends(get_db))
     return crud.dispatch_product(db=db, log=log)
 
 @app.get("/logs/", response_model=List[schemas.DailyLog])
-def read_logs(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    return crud.get_daily_logs(db, skip=skip, limit=limit)
+def read_logs(hawker_id: Optional[int] = None, skip: int = 0, limit: int = 1000, db: Session = Depends(get_db)):
+    return crud.get_daily_logs(db, hawker_id=hawker_id, skip=skip, limit=limit)
 
 @app.put("/returns/{log_id}", response_model=schemas.DailyLog)
 def log_returns(log_id: int, returned: schemas.DailyLogReturn, db: Session = Depends(get_db)):
@@ -143,8 +145,19 @@ def create_purchase(purchase: schemas.PurchaseCreate, db: Session = Depends(get_
     return crud.create_purchase(db=db, purchase=purchase)
 
 @app.get("/purchases/", response_model=List[schemas.Purchase])
-def read_purchases(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    return crud.get_purchases(db, skip=skip, limit=limit)
+def read_purchases(skip: int = 0, limit: int = 1000, include_hidden: bool = False, db: Session = Depends(get_db)):
+    return crud.get_purchases(db, skip=skip, limit=limit, include_hidden=include_hidden)
+
+@app.post("/purchases/clear-history")
+def clear_purchases_history(payload: schemas.PurchaseClearRequest, db: Session = Depends(get_db)):
+    if payload.scope not in ["all", "older_than_30_days"]:
+        raise HTTPException(status_code=400, detail="Invalid scope. Must be 'all' or 'older_than_30_days'.")
+    cleared_count = crud.clear_purchases_history(db, scope=payload.scope)
+    return {
+        "ok": True,
+        "count": cleared_count,
+        "message": f"Successfully cleared {cleared_count} records from restock history."
+    }
 
 @app.delete("/purchases/{purchase_id}")
 def delete_purchase(purchase_id: int, db: Session = Depends(get_db)):
@@ -215,8 +228,8 @@ def get_low_stock_alerts(limit: int = 5, db: Session = Depends(get_db)):
     return crud.get_low_stock_alerts(db, limit=limit)
 
 @app.get("/analytics/recent-transactions")
-def get_recent_transactions(limit: int = 10, db: Session = Depends(get_db)):
-    return crud.get_recent_transactions(db, limit=limit)
+def get_recent_transactions(limit: int = 10, category: Optional[str] = None, db: Session = Depends(get_db)):
+    return crud.get_recent_transactions(db, limit=limit, category=category)
 
 
 # --- Notification System & Product Requests ---
@@ -326,3 +339,56 @@ def delete_user(user_id: int, db: Session = Depends(get_db)):
     if not success:
         raise HTTPException(status_code=404, detail="User not found")
     return {"ok": True}
+
+# --- System Settings Endpoints ---
+@app.get("/settings/", response_model=List[schemas.SystemSetting])
+def read_settings(db: Session = Depends(get_db)):
+    return crud.get_all_settings(db)
+
+@app.get("/settings/{key}", response_model=schemas.SystemSetting)
+def read_setting(key: str, db: Session = Depends(get_db)):
+    val = crud.get_setting(db, key, default="")
+    return {"key": key, "value": val, "description": None}
+
+@app.post("/settings/", response_model=schemas.SystemSetting)
+def update_setting(setting: schemas.SystemSettingCreate, db: Session = Depends(get_db)):
+    return crud.set_setting(db, key=setting.key, value=setting.value, description=setting.description)
+
+@app.post("/settings/trigger-auto-cleanup")
+def trigger_auto_cleanup(db: Session = Depends(get_db)):
+    cleared = crud.run_auto_cleanup_if_enabled(db)
+    return {
+        "ok": True,
+        "cleared_count": cleared,
+        "message": f"Auto-cleanup executed: {cleared} old records cleared."
+    }
+
+# --- Startup & Periodic Background Cleanup Worker ---
+async def scheduled_cleanup_worker():
+    """Background task that runs once every 24 hours to perform auto-cleanup if enabled."""
+    while True:
+        try:
+            await asyncio.sleep(86400) # 24 hours
+            with SessionLocal() as db:
+                cleared = crud.run_auto_cleanup_if_enabled(db)
+                if cleared > 0:
+                    print(f"[Scheduled Auto-Cleanup] Cleared {cleared} old restock history records.")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"[Scheduled Cleanup Error] {e}")
+
+@app.on_event("startup")
+async def on_startup():
+    # 1. Run auto-cleanup once on startup if enabled
+    try:
+        with SessionLocal() as db:
+            cleared = crud.run_auto_cleanup_if_enabled(db)
+            if cleared > 0:
+                print(f"[Startup Auto-Cleanup] Cleared {cleared} old restock history records.")
+    except Exception as e:
+        print(f"[Startup Cleanup Error] {e}")
+
+    # 2. Launch background 24-hour periodic task
+    asyncio.create_task(scheduled_cleanup_worker())
+

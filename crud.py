@@ -1,3 +1,4 @@
+from typing import Optional, List
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 import models, schemas
@@ -27,6 +28,7 @@ def update_product(db: Session, product_id: int, product: schemas.ProductCreate)
         
         # Recalculate financial fields for any existing daily logs for this product
         logs = db.query(models.DailyLog).filter(models.DailyLog.product_id == product_id).all()
+        affected_hawker_ids = set()
         for log in logs:
             if log.sold_qty is not None:
                 log.gross_revenue = (log.sold_qty or 0) * db_product.selling_price
@@ -35,9 +37,12 @@ def update_product(db: Session, product_id: int, product: schemas.ProductCreate)
                 log.net_profit = log.gross_revenue - (cogs + log.hawker_payout)
                 expected_payment = log.gross_revenue - log.hawker_payout
                 log.outstanding_amount = expected_payment - (log.cash_collected or 0.0)
+                affected_hawker_ids.add(log.hawker_id)
 
         db.commit()
         db.refresh(db_product)
+        for h_id in affected_hawker_ids:
+            sync_hawker_balance(db, h_id)
     return db_product
 
 
@@ -60,11 +65,29 @@ def update_product_stock(db: Session, product_id: int, quantity_change: int):
     return product
 
 # --- Hawker ---
+def sync_hawker_balance(db: Session, hawker_id: int):
+    hawker = db.query(models.Hawker).filter(models.Hawker.id == hawker_id).first()
+    if hawker:
+        total_outstanding = db.query(func.coalesce(func.sum(models.DailyLog.outstanding_amount), 0.0)).filter(models.DailyLog.hawker_id == hawker_id).scalar() or 0.0
+        total_collections = db.query(func.coalesce(func.sum(models.Collection.amount), 0.0)).filter(models.Collection.hawker_id == hawker_id).scalar() or 0.0
+        # Ledger balance: negative means they owe money (unsettled debt), positive means credit
+        hawker.balance = round(float(total_collections - total_outstanding), 2)
+        db.commit()
+        db.refresh(hawker)
+    return hawker
+
 def get_hawker(db: Session, hawker_id: int):
+    sync_hawker_balance(db, hawker_id)
     return db.query(models.Hawker).filter(models.Hawker.id == hawker_id).first()
 
-def get_hawkers(db: Session, skip: int = 0, limit: int = 100):
-    return db.query(models.Hawker).offset(skip).limit(limit).all()
+def get_hawkers(db: Session, hawker_id: Optional[int] = None, skip: int = 0, limit: int = 100):
+    query = db.query(models.Hawker)
+    if hawker_id is not None:
+        query = query.filter(models.Hawker.id == hawker_id)
+    hawkers = query.offset(skip).limit(limit).all()
+    for h in hawkers:
+        sync_hawker_balance(db, h.id)
+    return hawkers
 
 def create_hawker(db: Session, hawker: schemas.HawkerCreate):
     db_hawker = models.Hawker(**hawker.model_dump())
@@ -93,7 +116,7 @@ def delete_hawker(db: Session, hawker_id: int):
     return False
 
 def update_hawker_balance(db: Session, hawker_id: int, amount_change: float):
-    hawker = get_hawker(db, hawker_id)
+    hawker = db.query(models.Hawker).filter(models.Hawker.id == hawker_id).first()
     if hawker:
         hawker.balance += amount_change
         db.commit()
@@ -167,19 +190,23 @@ def log_returns(db: Session, log_id: int, returned: schemas.DailyLogReturn):
         
     db.commit()
     db.refresh(db_log)
+    sync_hawker_balance(db, db_log.hawker_id)
     return db_log
 
-def get_daily_logs(db: Session, skip: int = 0, limit: int = 100):
-    return db.query(models.DailyLog).offset(skip).limit(limit).all()
+def get_daily_logs(db: Session, hawker_id: Optional[int] = None, skip: int = 0, limit: int = 1000):
+    query = db.query(models.DailyLog)
+    if hawker_id is not None:
+        query = query.filter(models.DailyLog.hawker_id == hawker_id)
+    return query.offset(skip).limit(limit).all()
 
 def delete_daily_log(db: Session, log_id: int):
     db_log = db.query(models.DailyLog).filter(models.DailyLog.id == log_id).first()
     if db_log:
+        hawker_id = db_log.hawker_id
         update_product_stock(db, db_log.product_id, db_log.sold_qty)
-        if db_log.outstanding_amount != 0:
-            update_hawker_balance(db, db_log.hawker_id, db_log.outstanding_amount)
         db.delete(db_log)
         db.commit()
+        sync_hawker_balance(db, hawker_id)
         return True
     return False
 
@@ -234,8 +261,35 @@ def create_purchase(db: Session, purchase: schemas.PurchaseCreate):
     db.refresh(db_purchase)
     return db_purchase
 
-def get_purchases(db: Session, skip: int = 0, limit: int = 100):
-    return db.query(models.Purchase).offset(skip).limit(limit).all()
+def get_purchases(db: Session, skip: int = 0, limit: int = 1000, include_hidden: bool = False):
+    query = db.query(models.Purchase)
+    if not include_hidden:
+        query = query.filter((models.Purchase.hidden_from_history == False) | (models.Purchase.hidden_from_history == None))
+    return query.offset(skip).limit(limit).all()
+
+def clear_purchases_history(db: Session, scope: str = "all") -> int:
+    """
+    Safely marks purchase log history as hidden without affecting:
+    - Current product stock
+    - Product base cost
+    - Product catalog
+    - Dashboard recent transactions
+    - Supplier records
+    """
+    query = db.query(models.Purchase).filter(
+        (models.Purchase.hidden_from_history == False) | (models.Purchase.hidden_from_history == None)
+    )
+    if scope == "older_than_30_days":
+        cutoff_date = date.today() - timedelta(days=30)
+        query = query.filter(models.Purchase.date < cutoff_date)
+    
+    records = query.all()
+    count = len(records)
+    for r in records:
+        r.hidden_from_history = True
+    
+    db.commit()
+    return count
 
 # --- Expenses ---
 def create_expense(db: Session, expense: schemas.ExpenseCreate):
@@ -252,12 +306,9 @@ def get_expenses(db: Session, skip: int = 0, limit: int = 100):
 def create_collection(db: Session, collection: schemas.CollectionCreate):
     db_collection = models.Collection(**collection.model_dump())
     db.add(db_collection)
-    
-    # Hawker paid money, balance increases (reduces their debt)
-    update_hawker_balance(db, collection.hawker_id, collection.amount)
-    
     db.commit()
     db.refresh(db_collection)
+    sync_hawker_balance(db, collection.hawker_id)
     return db_collection
 
 def get_collections(db: Session, skip: int = 0, limit: int = 100):
@@ -285,19 +336,7 @@ def update_collection(db: Session, collection_id: int, collection: schemas.Colle
     if collection.edit_reason:
         db_collection.edit_reason = collection.edit_reason
 
-    # 2. Recalculate affected hawker balance(s):
-    # Reverse old payment's effect, then apply new payment's effect
-    if old_hawker_id == new_hawker_id:
-        amount_diff = new_amount - old_amount
-        if amount_diff != 0:
-            update_hawker_balance(db, old_hawker_id, amount_diff)
-    else:
-        # Revert old payment from previous hawker
-        update_hawker_balance(db, old_hawker_id, -old_amount)
-        # Apply new payment to new hawker
-        update_hawker_balance(db, new_hawker_id, new_amount)
-
-    # 3. Update collection fields
+    # 2. Update collection fields
     db_collection.date = collection.date
     db_collection.hawker_id = new_hawker_id
     db_collection.amount = new_amount
@@ -305,6 +344,9 @@ def update_collection(db: Session, collection_id: int, collection: schemas.Colle
 
     db.commit()
     db.refresh(db_collection)
+    sync_hawker_balance(db, old_hawker_id)
+    if new_hawker_id != old_hawker_id:
+        sync_hawker_balance(db, new_hawker_id)
     return db_collection
 
 def delete_purchase(db: Session, purchase_id: int):
@@ -335,9 +377,10 @@ def delete_expense(db: Session, expense_id: int):
 def delete_collection(db: Session, collection_id: int):
     db_collection = db.query(models.Collection).filter(models.Collection.id == collection_id).first()
     if db_collection:
-        update_hawker_balance(db, db_collection.hawker_id, -db_collection.amount)
+        hawker_id = db_collection.hawker_id
         db.delete(db_collection)
         db.commit()
+        sync_hawker_balance(db, hawker_id)
         return True
     return False
 
@@ -775,82 +818,98 @@ def _format_date_label(d):
     else:
         return d.strftime("%b %d, %Y")
 
-def get_recent_transactions(db: Session, limit: int = 10):
+def get_recent_transactions(db: Session, limit: int = 10, category: Optional[str] = None):
     txs = []
+    fetch_limit = max(limit, 100) if limit > 10 else 10
+    cat_lower = category.lower().strip() if category else None
     
     # 1. Collections
-    cols = db.query(models.Collection).order_by(models.Collection.id.desc()).limit(10).all()
-    for c in cols:
-        h_name = c.hawker.name if c.hawker else f"Hawker #{c.hawker_id}"
-        date_str = _format_date_label(c.date)
-        txs.append({
-            "id": f"col_{c.id}",
-            "type": "Collection",
-            "reference": f"COL-{c.id:05d}",
-            "party": h_name,
-            "amount": f"₹{c.amount:,.0f}",
-            "time": date_str,
-            "type_category": "collection"
-        })
+    if not cat_lower or cat_lower in ["collection", "collections"]:
+        cols = db.query(models.Collection).order_by(models.Collection.id.desc()).limit(fetch_limit).all()
+        for c in cols:
+            h_name = c.hawker.name if c.hawker else f"Hawker #{c.hawker_id}"
+            date_str = _format_date_label(c.date)
+            txs.append({
+                "id": f"col_{c.id}",
+                "raw_id": c.id,
+                "type": "Collection",
+                "reference": f"COL-{c.id:05d}",
+                "party": h_name,
+                "amount": f"₹{c.amount:,.0f}",
+                "time": date_str,
+                "raw_date": str(c.date) if c.date else "",
+                "type_category": "collection"
+            })
 
     # 2. Daily Logs (Dispatches & Returns)
-    logs = db.query(models.DailyLog).order_by(models.DailyLog.id.desc()).limit(10).all()
-    for l in logs:
-        h_name = l.hawker.name if l.hawker else f"Hawker #{l.hawker_id}"
-        date_str = _format_date_label(l.date)
-        if l.dispatched_qty > 0:
-            amt = f"₹{l.gross_revenue:,.0f}" if l.gross_revenue else f"{l.dispatched_qty} Units"
-            txs.append({
-                "id": f"dist_{l.id}",
-                "type": "Distribution",
-                "reference": f"DIST-{l.id:05d}",
-                "party": h_name,
-                "amount": amt,
-                "time": date_str,
-                "type_category": "distribution"
-            })
-        if l.returned_qty > 0:
-            txs.append({
-                "id": f"ret_{l.id}",
-                "type": "Return",
-                "reference": f"RET-{l.id:05d}",
-                "party": h_name,
-                "amount": f"{l.returned_qty} Units",
-                "time": date_str,
-                "type_category": "return"
-            })
+    if not cat_lower or cat_lower in ["distribution", "distributions", "return", "returns"]:
+        logs = db.query(models.DailyLog).order_by(models.DailyLog.id.desc()).limit(fetch_limit).all()
+        for l in logs:
+            h_name = l.hawker.name if l.hawker else f"Hawker #{l.hawker_id}"
+            date_str = _format_date_label(l.date)
+            if l.dispatched_qty > 0 and (not cat_lower or cat_lower in ["distribution", "distributions"]):
+                amt = f"₹{l.gross_revenue:,.0f}" if l.gross_revenue else f"{l.dispatched_qty} Units"
+                txs.append({
+                    "id": f"dist_{l.id}",
+                    "raw_id": l.id,
+                    "type": "Distribution",
+                    "reference": f"DIST-{l.id:05d}",
+                    "party": h_name,
+                    "amount": amt,
+                    "time": date_str,
+                    "raw_date": str(l.date) if l.date else "",
+                    "type_category": "distribution"
+                })
+            if l.returned_qty > 0 and (not cat_lower or cat_lower in ["return", "returns"]):
+                txs.append({
+                    "id": f"ret_{l.id}",
+                    "raw_id": l.id,
+                    "type": "Return",
+                    "reference": f"RET-{l.id:05d}",
+                    "party": h_name,
+                    "amount": f"{l.returned_qty} Units",
+                    "time": date_str,
+                    "raw_date": str(l.date) if l.date else "",
+                    "type_category": "return"
+                })
 
     # 3. Purchases
-    purchases = db.query(models.Purchase).order_by(models.Purchase.id.desc()).limit(10).all()
-    for p in purchases:
-        p_name = p.product.name if p.product else f"Product #{p.product_id}"
-        date_str = _format_date_label(p.date)
-        txs.append({
-            "id": f"pur_{p.id}",
-            "type": "Purchase",
-            "reference": f"PUR-{p.id:05d}",
-            "party": p_name,
-            "amount": f"₹{p.total_cost:,.0f}",
-            "time": date_str,
-            "type_category": "purchase"
-        })
+    if not cat_lower or cat_lower in ["purchase", "purchases"]:
+        purchases = db.query(models.Purchase).order_by(models.Purchase.id.desc()).limit(fetch_limit).all()
+        for p in purchases:
+            p_name = p.product.name if p.product else f"Product #{p.product_id}"
+            date_str = _format_date_label(p.date)
+            txs.append({
+                "id": f"pur_{p.id}",
+                "raw_id": p.id,
+                "type": "Purchase",
+                "reference": f"PUR-{p.id:05d}",
+                "party": p_name,
+                "amount": f"₹{p.total_cost:,.0f}",
+                "time": date_str,
+                "raw_date": str(p.date) if p.date else "",
+                "type_category": "purchase"
+            })
 
     # 4. Expenses
-    expenses = db.query(models.Expense).order_by(models.Expense.id.desc()).limit(10).all()
-    for e in expenses:
-        date_str = _format_date_label(e.date)
-        txs.append({
-            "id": f"exp_{e.id}",
-            "type": "Expense",
-            "reference": f"EXP-{e.id:05d}",
-            "party": e.category or "General",
-            "amount": f"₹{e.amount:,.0f}",
-            "time": date_str,
-            "type_category": "expense"
-        })
+    if not cat_lower or cat_lower in ["expense", "expenses"]:
+        expenses = db.query(models.Expense).order_by(models.Expense.id.desc()).limit(fetch_limit).all()
+        for e in expenses:
+            date_str = _format_date_label(e.date)
+            txs.append({
+                "id": f"exp_{e.id}",
+                "raw_id": e.id,
+                "type": "Expense",
+                "reference": f"EXP-{e.id:05d}",
+                "party": e.category or "General",
+                "amount": f"₹{e.amount:,.0f}",
+                "time": date_str,
+                "raw_date": str(e.date) if e.date else "",
+                "type_category": "expense"
+            })
 
-    # Sort descending by reference
-    txs.sort(key=lambda x: x["reference"], reverse=True)
+    # Sort descending by raw_date, then by reference
+    txs.sort(key=lambda x: (x.get("raw_date", ""), x.get("reference", "")), reverse=True)
     return txs[:limit]
 
 
@@ -899,6 +958,34 @@ def delete_unit(db: Session, unit_id: int):
         db.commit()
         return True
     return False
+
+# --- System Settings CRUD & Auto-Cleanup ---
+def get_setting(db: Session, key: str, default: str = "") -> str:
+    setting = db.query(models.SystemSetting).filter(models.SystemSetting.key == key).first()
+    return setting.value if setting else default
+
+def set_setting(db: Session, key: str, value: str, description: Optional[str] = None) -> models.SystemSetting:
+    setting = db.query(models.SystemSetting).filter(models.SystemSetting.key == key).first()
+    if setting:
+        setting.value = value
+        if description is not None:
+            setting.description = description
+    else:
+        setting = models.SystemSetting(key=key, value=value, description=description)
+        db.add(setting)
+    db.commit()
+    db.refresh(setting)
+    return setting
+
+def get_all_settings(db: Session) -> List[models.SystemSetting]:
+    return db.query(models.SystemSetting).all()
+
+def run_auto_cleanup_if_enabled(db: Session) -> int:
+    auto_enabled = get_setting(db, "auto_cleanup_purchases_30_days", "false")
+    if auto_enabled.lower() == "true":
+        return clear_purchases_history(db, scope="older_than_30_days")
+    return 0
+
 
 
 

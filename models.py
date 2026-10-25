@@ -81,6 +81,7 @@ class Purchase(Base):
     supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=True)
     expiry_date = Column(Date, nullable=True)
     notes = Column(String, nullable=True)
+    hidden_from_history = Column(Boolean, default=False)
     
     product = relationship("Product")
     supplier_rel = relationship("Supplier")
@@ -159,5 +160,13 @@ class DismissedNotification(Base):
 
     id = Column(String, primary_key=True, index=True)
     dismissed_at = Column(DateTime, default=datetime.datetime.now)
+
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+
+    key = Column(String, primary_key=True, index=True)
+    value = Column(String, default="")
+    description = Column(String, nullable=True)
+    updated_at = Column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now)
 
 

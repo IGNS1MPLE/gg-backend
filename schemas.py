@@ -103,6 +103,7 @@ class PurchaseBase(BaseModel):
     supplier_id: Optional[int] = None
     expiry_date: Optional[date] = None
     notes: Optional[str] = None
+    hidden_from_history: Optional[bool] = False
 
 class PurchaseCreate(PurchaseBase):
     pass
@@ -236,3 +237,21 @@ class LoginResponse(BaseModel):
     user: Optional[UserAccount] = None
     role: str
     message: str
+
+# --- Purchase Clear & History Schemas ---
+class PurchaseClearRequest(BaseModel):
+    scope: str # "all" or "older_than_30_days"
+
+# --- System Settings Schemas ---
+class SystemSettingBase(BaseModel):
+    key: str
+    value: str
+    description: Optional[str] = None
+
+class SystemSettingCreate(SystemSettingBase):
+    pass
+
+class SystemSetting(SystemSettingBase):
+    class Config:
+        from_attributes = True
+
